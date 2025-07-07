@@ -1,9 +1,10 @@
 import json
 import csv
 import os
+import io
 import numpy as np
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageOps
 import argparse
 import random
 
@@ -13,7 +14,7 @@ SIGNATURE_FONT = FONTS_DIR / 'signature.ttf'
 # Available handwriting style fonts
 HANDWRITING_FONTS = [
     FONTS_DIR / 'handwriting.ttf',
-    FONTS_DIR / 'handwriting2.ttf',
+    FONTS_DIR / 'handwriting2.ttf',  
     FONTS_DIR / 'handwriting3.ttf'
 ]
 
@@ -24,14 +25,16 @@ DOCUMENT_SUBTYPES = {
     'ssn': ['us_ssn'],
 }
 
-
 class DocumentGenerator:
-    def __init__(self, template_path, spec_path, font_path=None, font_size=12):
+    def __init__(self, template_path, spec_path, font_path=None, font_size=12, quality='unclear'):
         try:
             self.template = Image.open(template_path).convert('RGBA')
             self.spec = self._load_spec(spec_path)
             self.font_path = str(font_path) if font_path else None
             self.font_size = font_size
+            self.quality = quality.lower()
+            if self.quality not in ['clear', 'unclear']:
+                self.quality = 'unclear'  # Default to unclear if invalid value provided
             self.font_cache = {}
             
             if not self.font_path and DEFAULT_FONT.exists():
@@ -65,11 +68,53 @@ class DocumentGenerator:
                     
         return self.font_cache[cache_key]
     
-    def _add_noise_effects(self, img):
-        """Add realistic noise and effects to the document"""
+    def _add_noise_effects(self, img): #add realistic noise
+        if self.quality != 'unclear':
+            return img.convert('RGBA')
+            
+        img = img.convert('RGBA')
+        
+        original_size = img.size
+        
+        scale_down = random.uniform(0.3, 0.5)  # 30-50% of original size (less aggressive)
+        
+        #downscale image
+        small_size = (
+            max(20, int(original_size[0] * scale_down * random.uniform(0.95, 1.05))),  # ±5% aspect ratio
+            max(20, int(original_size[1] * scale_down * random.uniform(0.95, 1.05)))
+        )
+        img = img.resize(small_size, Image.Resampling.LANCZOS)
+        
+        #upscale image
+        scale_up = random.uniform(2.0, 3.0)
+        large_size = (
+            int(small_size[0] * scale_up * random.uniform(0.98, 1.02)),  # ±2% aspect ratio
+            int(small_size[1] * scale_up * random.uniform(0.98, 1.02))
+        )
+        img = img.resize(large_size, Image.Resampling.NEAREST)
+        
+        # Add slight rotation
+        rotation_angle = random.uniform(-2, 2)
+        img = img.rotate(rotation_angle, resample=Image.BICUBIC, expand=True, fillcolor='white')
+        
+        # Final resize to original dimensions with bilinear for better quality
+        img = img.resize(original_size, Image.Resampling.BILINEAR)
+        
+        # Add moderate JPEG compression
+        if random.random() > 0.3:  # 70% chance
+            buffer = io.BytesIO()
+            img.convert('RGB').save(buffer, format='JPEG', quality=random.randint(30, 60))
+            img = Image.open(buffer).convert('RGBA')
+        
+        # Add subtle noise
+        if random.random() > 0.3:  # 70% chance, less frequent
+            noise = np.random.randint(0, 30, (img.size[1], img.size[0], 3), dtype=np.uint8)  # Less intense noise
+            noise_img = Image.fromarray(noise).convert('RGBA')
+            img = Image.blend(img, noise_img, alpha=0.05)  # More subtle blend
+        
         # Random blur
-        if random.random() > 0.4:
-            blur_radius = random.uniform(0.8, 2.0)
+        if random.random() > 0.3:  # 70% chance of blur
+            blur_radius = random.uniform(1.2, 3.0)
             img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
         
         # Random brightness/contrast adjustment
@@ -169,10 +214,8 @@ class DocumentGenerator:
             
             # Paste the document
             try:
-                # Create a temporary RGBA image for pasting
                 temp_img = Image.new('RGBA', final_img.size, (0, 0, 0, 0))
                 temp_img.paste(img, (x, y), img)
-                # Composite the document onto the final image
                 final_img = Image.alpha_composite(final_img, temp_img)
 
                 if data and (data.get('AccountID') or data.get('HealthBenefitID')):
@@ -244,20 +287,167 @@ class DocumentGenerator:
             print(f"Error during A4 composition: {e}")
             return img.convert('L').convert('RGBA')  # Fallback to grayscale
             
+    def _get_optimal_font_size(self, draw, text, font_path, max_width, max_height, min_size=6, max_size=100):
+        """Find the optimal font size that makes the text fit within max_width and max_height"""
+        if not text or not font_path.exists():
+            return min_size
+            
+        left, right = min_size, max_size
+        best_size = min_size
+        
+        while left <= right:
+            mid = (left + right) // 2
+            try:
+                font = ImageFont.truetype(str(font_path), mid)
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                
+                if text_width <= max_width and text_height <= max_height:
+                    best_size = mid
+                    left = mid + 1
+                else:
+                    right = mid - 1
+            except Exception:
+                right = mid - 1
+                
+        return best_size
+
+    def _add_handwritten_annotations(self, img, data):
+        """Add handwritten annotations for AccountID and HealthBenefitID using labeled areas"""
+        if not data:
+            return img
+            
+        draw = ImageDraw.Draw(img)
+        
+        # Check for labeled areas in the spec - look for combined or separate fields
+        combined_areas = [f for f in self.spec.get('fields', []) 
+                         if set(f['name'].split(',')).issuperset({'AccountID', 'HealthBenefitID'})]
+        account_areas = [f for f in self.spec.get('fields', []) if f['name'] == 'AccountID']
+        health_areas = [f for f in self.spec.get('fields', []) if f['name'] == 'HealthBenefitID']
+        
+        # Select random handwriting fonts for each ID
+        fonts = random.sample(HANDWRITING_FONTS, 2)  # Get 2 unique random fonts
+        hw_font_path1 = fonts[0]
+        hw_font_path2 = fonts[1] if len(fonts) > 1 else fonts[0]
+        
+        # Handle combined AccountID,HealthBenefitID label
+        if combined_areas and ('AccountID' in data or 'HealthBenefitID' in data):
+            area = combined_areas[0]  # Use first matching area
+            bbox = area['bbox']
+            x = int(bbox[0] * img.width)
+            y = int(bbox[1] * img.height)
+            w = int(bbox[2] * img.width)
+            h = int(bbox[3] * img.height)
+            
+            # Calculate available height for each line (split in half)
+            line_height = h // 2
+            
+            # Draw AccountID if present
+            if 'AccountID' in data and data['AccountID']:
+                account_text = f"Account: {data['AccountID']}"
+                # Calculate optimal font size for this text
+                font_size = self._get_optimal_font_size(draw, account_text, hw_font_path1, w, line_height * 0.9)
+                try:
+                    hw_font = ImageFont.truetype(str(hw_font_path1), font_size)
+                    # Get text size to center it vertically within its line
+                    text_bbox = draw.textbbox((0, 0), account_text, font=hw_font)
+                    text_w = text_bbox[2] - text_bbox[0]
+                    text_h = text_bbox[3] - text_bbox[1]
+                    # Center text in the line
+                    text_y = y + (line_height - text_h) // 2
+                    draw.text((x, text_y), account_text, font=hw_font, fill=(80, 80, 80, 220))
+                except Exception as e:
+                    print(f"Error rendering AccountID: {e}")
+            
+            # Draw HealthBenefitID below AccountID if present
+            if 'HealthBenefitID' in data and data['HealthBenefitID']:
+                health_text = f"Health: {data['HealthBenefitID']}"
+                # Calculate optimal font size for this text
+                font_size = self._get_optimal_font_size(draw, health_text, hw_font_path2, w, line_height * 0.9)
+                try:
+                    hw_font = ImageFont.truetype(str(hw_font_path2), font_size)
+                    # Get text size to center it vertically within its line
+                    text_bbox = draw.textbbox((0, 0), health_text, font=hw_font)
+                    text_w = text_bbox[2] - text_bbox[0]
+                    text_h = text_bbox[3] - text_bbox[1]
+                    # Center text in the line (second line)
+                    text_y = y + line_height + (line_height - text_h) // 2
+                    draw.text((x, text_y), health_text, font=hw_font, fill=(80, 80, 80, 220))
+                except Exception as e:
+                    print(f"Error rendering HealthBenefitID: {e}")
+                    
+        # Handle separate AccountID and HealthBenefitID labels (for documents on A4)
+        else:
+            # Add AccountID if present in data and we have a labeled area
+            if 'AccountID' in data and data['AccountID'] and account_areas:
+                area = account_areas[0]
+                bbox = area['bbox']
+                x = int(bbox[0] * img.width)
+                y = int(bbox[1] * img.height)
+                w = int(bbox[2] * img.width)
+                h = int(bbox[3] * img.height)
+                
+                account_text = f"Account: {data['AccountID']}"
+                font_size = self._get_optimal_font_size(draw, account_text, hw_font_path1, w, h)
+                
+                try:
+                    hw_font = ImageFont.truetype(str(hw_font_path1), font_size)
+                    # Center text in the box
+                    text_bbox = draw.textbbox((0, 0), account_text, font=hw_font)
+                    text_w = text_bbox[2] - text_bbox[0]
+                    text_h = text_bbox[3] - text_bbox[1]
+                    text_x = x + (w - text_w) // 2
+                    text_y = y + (h - text_h) // 2
+                    draw.text((text_x, text_y), account_text, font=hw_font, fill=(80, 80, 80, 220))
+                except Exception as e:
+                    print(f"Error rendering AccountID: {e}")
+            
+            # Add HealthBenefitID if present in data and we have a labeled area
+            if 'HealthBenefitID' in data and data['HealthBenefitID'] and health_areas:
+                area = health_areas[0]
+                bbox = area['bbox']
+                x = int(bbox[0] * img.width)
+                y = int(bbox[1] * img.height)
+                w = int(bbox[2] * img.width)
+                h = int(bbox[3] * img.height)
+                
+                health_text = f"Health: {data['HealthBenefitID']}"
+                font_size = self._get_optimal_font_size(draw, health_text, hw_font_path2, w, h)
+                
+                try:
+                    hw_font = ImageFont.truetype(str(hw_font_path2), font_size)
+                    # Center text in the box
+                    text_bbox = draw.textbbox((0, 0), health_text, font=hw_font)
+                    text_w = text_bbox[2] - text_bbox[0]
+                    text_h = text_bbox[3] - text_bbox[1]
+                    text_x = x + (w - text_w) // 2
+                    text_y = y + (h - text_h) // 2
+                    draw.text((text_x, text_y), health_text, font=hw_font, fill=(80, 80, 80, 220))
+                except Exception as e:
+                    print(f"Error rendering HealthBenefitID: {e}")
+        
+        return img
+
     def generate(self, data, output_path=None):
         try:
             img = self.template.copy()
             draw = ImageDraw.Draw(img)
             
-            for field in self.spec['fields']:
+            # check if full-page document by looking for AccountID/HealthBenefitID fields
+            has_id_fields = any(
+                set(f['name'].split(',')).issuperset({'AccountID', 'HealthBenefitID'}) or 
+                f['name'] in ['AccountID', 'HealthBenefitID'] 
+                for f in self.spec.get('fields', [])
+            )
+            
+            # first, render all the fields from the spec
+            for field in self.spec.get('fields', []):
                 name = field['name']
-                
-                if name == 'blank':
+
+                if name in ['AccountID', 'HealthBenefitID'] or \
+                   set(name.split(',')).issuperset({'AccountID', 'HealthBenefitID'}):
                     continue
-                    
-                if name.lower() == 'signature':
-                    continue
-                    
                 x, y, w, h = field['bbox']
                 
                 if w <= 0 or h <= 0:
@@ -268,10 +458,10 @@ class DocumentGenerator:
                 abs_w = int(w * self.spec['width'])
                 abs_h = int(h * self.spec['height'])
                 
-                # Handle multiple fields in one label (comma-separated)
+                # handle multiple fields in one label (comma-separated)
                 field_names = [n.strip() for n in field['name'].split(',')]
                 
-                # Group City and State together if they appear consecutively
+                # group city and state together if they appear consecutively
                 processed_fields = []
                 i = 0
                 while i < len(field_names):
@@ -287,7 +477,7 @@ class DocumentGenerator:
                     field_name, start_idx, end_idx = field_info
                     
                     if field_name == 'City,State':
-                        # Get both City and State values
+                        # get both city and state values
                         city = str(data.get('City', '')).strip()
                         state = str(data.get('State', '')).strip()
                         if city and state:
@@ -363,7 +553,7 @@ class DocumentGenerator:
                     best_size = min_font_size
                     
                     try:
-                        # Binary search for best font size
+                        # binary search for best font size
                         low = min_font_size
                         high = max_font_size
                         
@@ -415,13 +605,20 @@ class DocumentGenerator:
                 except Exception as e:
                     print(f"Failed to render signature: {e}")
             
-            # Save or return the image
-            # Composite onto A4 before saving
+            # save or return the image
+            # composite onto A4 before saving
+            if output_path is None:
+                return img
+            
+            # for documents with ID fields, add handwritten annotations and save directly
+            if has_id_fields:
+                img = self._add_handwritten_annotations(img, data)
+                img.save(output_path, 'PNG', quality=95, dpi=(300, 300))
+                return img
+                
+            # for regular documents, composite on A4 and save
             final_img = self._composite_on_a4(img, data)
-            
-            if output_path:
-                final_img.save(output_path, 'PNG', quality=95, dpi=(300, 300))
-            
+            final_img.save(output_path, 'PNG', quality=95, dpi=(300, 300))
             return final_img
 
         except Exception as e:
@@ -436,7 +633,7 @@ def generate_batch(generator, data_list, output_dir, count=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Limit to requested count or all available data
+    # limit to requested count or all available data
     count = min(count, len(data_list)) if count else len(data_list)
     
     generated_files = []
@@ -456,31 +653,32 @@ def main():
     parser.add_argument('--subtype', help='Explicit subtype to use (e.g., us_passport). Overrides random choice.')
     parser.add_argument('--no-random', action='store_true', help='Disable random subtype selection when base doc_type is given')
     parser.add_argument('--data', default='data/sample_data.csv', help='Path to CSV data file (default: data/sample_data.csv)')
-    parser.add_argument('--font', help='Path to custom font file')
-    parser.add_argument('--font-size', type=int, default=12, help='Base font size (default: 12)')
-    parser.add_argument('--output-dir', default='output/documents', help='Output directory (default: output/documents)')
-    parser.add_argument('--count', type=int, help='Number of documents to generate (default: all rows in CSV)')
+    parser.add_argument('--output-dir', default='output/documents', help='Output directory for generated documents (default: output/documents)')
+    parser.add_argument('--row', type=int, help='Specific row to use from CSV (0-based)')
+    parser.add_argument('--count', type=int, help='Number of documents to generate (default: 1 or number of rows in CSV)')
     parser.add_argument('--pdf', choices=['single', 'multi'], help="Output PDFs: 'single' = separate PDF per doc, 'multi' = combined multi-page PDF")
+    parser.add_argument('--quality', choices=['clear', 'unclear'], default='unclear', 
+                      help="Output quality: 'clear' for clean output, 'unclear' for realistic/noisy output (default: unclear)")
     
     args = parser.parse_args()
     
-    # Set up paths
+    # set up paths
     base_dir = Path(__file__).parent
     templates_dir = base_dir / 'templates'
     output_dir = Path(args.output_dir)
     
-    # Create output directories
+    # create output directories
     documents_dir = base_dir / 'output' / 'documents'
     pdfs_dir = base_dir / 'output' / 'pdfs'
     documents_dir.mkdir(parents=True, exist_ok=True)
     pdfs_dir.mkdir(parents=True, exist_ok=True)
     
-    # Set output directory for PNGs
+    # set output directory for PNGs
     output_dir = Path(args.output_dir) if args.output_dir else documents_dir
     
-    # Resolve subtype(s)
+    # resolve subtype(s)
     if '_' in args.doc_type:
-        # User already passed a full subtype
+        # user already passed a full subtype
         base_type = args.doc_type.split('_')[-1]
         subtype_list = [args.doc_type]
     else:
@@ -490,7 +688,7 @@ def main():
             print(f"ERROR: Unknown document type '{args.doc_type}'. Available: {list(DOCUMENT_SUBTYPES.keys())}")
             return
     
-    # Validate explicit subtype
+    # validate explicit subtype
     if args.subtype:
         if args.subtype not in subtype_list:
             print(f"ERROR: Subtype '{args.subtype}' not valid for base type '{base_type}'. Choose from: {subtype_list}")
@@ -500,7 +698,6 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load data
     data_file = Path(args.data)
     if not data_file.exists():
         print(f"ERROR: Data file not found: {data_file}")
@@ -512,13 +709,13 @@ def main():
         print("ERROR: No data found in the CSV file")
         return
     
-    # Determine how many docs to generate
+    # determine how many docs to generate
     max_docs = len(data_rows)
     count = min(args.count, max_docs) if args.count else max_docs
     if args.count and args.count > max_docs:
         print(f"Only {max_docs} rows available, generating {count} documents")
 
-    # Choose a single subtype for this batch
+    # choose a single subtype for this batch
     if len(subtype_list) == 1:
         chosen_subtype = subtype_list[0]
     else:
@@ -531,8 +728,8 @@ def main():
         print(f"ERROR: Cleaned assets for '{chosen_subtype}' not found. Run 'python clean_template.py {chosen_subtype}' first.")
         return
 
-    # Create generator once
-    generator = DocumentGenerator(cleaned_template, spec_file, args.font, args.font_size)
+    # create generator once with specified quality
+    generator = DocumentGenerator(cleaned_template, spec_file, None, 12, args.quality)  # using default font and size
 
     generated_files = []
     for i in range(count):
@@ -547,12 +744,12 @@ def main():
         except Exception as e:
             print(f"Error generating document {i+1} ({chosen_subtype}): {e}")
 
-    # Summary
+    # summary
     if generated_files:
         print("\nGenerated documents:")
         for idx, fp in enumerate(generated_files, 1):
             print(f"  {idx}. {fp}")
-        # Optional PDF conversion
+        # optional PDF conversion
         if args.pdf:
             if args.pdf == 'single':
                 print("\nGenerating single-page PDFs…")
@@ -582,7 +779,7 @@ def main():
     spec_file = base_dir / 'output' / 'clean_templates' / f"{args.doc_type}_spec.json"
     data_file = Path(args.data)
     
-    # Check if files exist
+    # check if files exist
     if not cleaned_template.exists():
 
         print(f"Please run 'python clean_template.py {args.doc_type}' first")
@@ -598,10 +795,10 @@ def main():
         print("Please provide a valid CSV file with --data")
         return
     
-    # Output directories are already created at the beginning of the function
+    # output directories are already created at the beginning of the function
     
     try:
-        generator = DocumentGenerator(cleaned_template, spec_file, args.font, args.font_size)
+        generator = DocumentGenerator(cleaned_template, spec_file, None, 12)  # using default font and size
         
         with open(data_file) as f:
             reader = csv.DictReader(f)

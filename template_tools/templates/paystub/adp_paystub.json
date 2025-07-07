@@ -79,6 +79,32 @@
       "shape_type": "polygon",
       "flags": {},
       "mask": null
+    },
+    {
+      "label": "AccountID,HealthBenefitID",
+      "points": [
+        [
+          870.2702702702702,
+          1033.918918918919
+        ],
+        [
+          1418.9189189189192,
+          1033.918918918919
+        ],
+        [
+          1418.9189189189192,
+          1336.6216216216217
+        ],
+        [
+          864.864864864865,
+          1333.918918918919
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "shape_type": "polygon",
+      "flags": {},
+      "mask": null
     }
   ],
   "imagePath": "adp_paystub.png",
