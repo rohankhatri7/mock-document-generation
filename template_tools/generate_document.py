@@ -131,162 +131,116 @@ class DocumentGenerator:
         
         return img.convert('RGBA')
 
+    def _add_printer_artifacts(self, img, intensity=0.02):
+        """Add realistic grayscale printer/fax artifacts like streaks and dots"""
+        if img.mode != 'L':
+            img = img.convert('L').convert('RGBA')
+        
+        width, height = img.size
+        
+        # create a transparent overlay for artifacts to appear on top
+        overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay, 'RGBA')
+        
+        # add random dots
+        dot_count = int(width * height * intensity * 1.08 / 100)
+        for _ in range(dot_count):
+            x = random.randint(0, width - 1)
+            y = random.randint(0, height - 1)
+            size = random.randint(3, 6)
+            darkness = random.randint(120, 200)
+            gray_value = random.randint(0, 80)
+            draw.ellipse([x, y, x + size, y + size], fill=(gray_value, gray_value, gray_value, darkness))
+        
+        # add vertical streaks
+        for _ in range(random.randint(1, 5)):
+            x = random.randint(0, width - 1)
+            streak_width = random.randint(1, 3)
+            darkness = min(150, int(random.randint(20, 80) * 1.10))
+            gray_value = random.randint(0, 60)
+            for dx in range(streak_width):
+                if x + dx < width:
+                    for y in range(0, height, 2):
+                        if random.random() < 0.7:
+                            draw.point((x + dx, y), fill=(gray_value, gray_value, gray_value, darkness))
+        
+        # add some random horizontal streaks
+        if random.random() < 0.3:
+            y = random.randint(0, height - 1)
+            streak_height = random.randint(1, 2)
+            darkness = min(150, int(random.randint(15, 60) * 1.10))
+            gray_value = random.randint(0, 70)
+            for dy in range(streak_height):
+                if y + dy < height:
+                    for x in range(0, width, 2):
+                        if random.random() < 0.6:
+                            draw.point((x, y + dy), fill=(gray_value, gray_value, gray_value, darkness))
+        
+        # add subtle noise in grayscale
+        noise = Image.effect_noise((width, height), 10)
+        noise = noise.convert('L')
+        noise = Image.merge('RGBA', (noise, noise, noise, Image.new('L', (width, height), 10)))
+        
+        # composite everything together
+        result = Image.alpha_composite(img, overlay)
+        result = Image.alpha_composite(result, noise)
+        
+        return result
+
     def _composite_on_a4(self, img, data=None):
-        """Composite the document onto an A4 page with random positioning and scaling"""
+        """Composite the document onto an A4 page with grayscale artifacts"""
         try:
-            # Path to blank page template
-            blank_path = Path(__file__).parent / 'templates' / 'blank.png'
-            if not blank_path.exists():
-                print(f"Warning: A4 template not found at {blank_path}")
-                return img.convert('L').convert('RGBA')
-
-            a4_img = Image.open(blank_path).convert('RGBA')
-            a4_width, a4_height = a4_img.size
+            # create a4 sheet
+            a4_width, a4_height = 2480, 3508
             
-            # Convert document to grayscale and apply noise effects
-            if img.mode != 'L':
-                img = img.convert('L')
+            # create a blank grayscale a4 sheet with white background
+            a4_img = Image.new('L', (a4_width, a4_height), 255).convert('RGBA')
             
-            img = self._add_noise_effects(img)
+            a4_img = self._add_printer_artifacts(a4_img)
             
-            margin_x = int(a4_width * random.uniform(0.15, 0.20))
-            margin_y = int(a4_height * random.uniform(0.15, 0.20))
+            doc_width, doc_height = img.size
+            x = (a4_width - doc_width) // 2
+            y = (a4_height - doc_height) // 2
             
-            max_w_avail = a4_width - 2 * margin_x
-            max_h_avail = a4_height - 2 * margin_y
-            
-            max_doc_width = int(max_w_avail * 0.8)
-            max_doc_height = int(max_h_avail * 0.8)
-            
-            scale_w = max_doc_width / img.width
-            scale_h = max_doc_height / img.height
-            
-            scale = min(scale_w, scale_h, 1.0)
-            
-            scale = scale * random.uniform(0.6, 0.9)
-            new_size = (int(img.width * scale), int(img.height * scale))
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
-            
-            min_x = margin_x
-            max_x = a4_width - img.width - margin_x
-            min_y = margin_y
-            max_y = a4_height - img.height - margin_y
-            
-            if min_x > max_x:
-                min_x = max_x = (a4_width - img.width) // 2
-            if min_y > max_y:
-                min_y = max_y = (a4_height - img.height) // 2
-            if min_x > max_x:
-                min_x = max_x = (a4_width - img.width) // 2
-            if min_y > max_y:
-                min_y = max_y = (a4_height - img.height) // 2
-                
-            x = random.randint(min_x, max_x)
-            y = random.randint(min_y, max_y)
-            
-            if random.random() > 0.5:
-                img = img.rotate(random.uniform(-2, 2), expand=True, resample=Image.BICUBIC, fillcolor=255)
-            
-            # Random transparency
-            if random.random() > 0.5:
-                alpha = img.split()[3]
-                alpha = alpha.point(lambda p: p * random.uniform(0.9, 1.0))
-                img.putalpha(alpha)
-            
-            # Random paper texture overlay
-            if random.random() > 0.8:
-                paper = Image.new('L', a4_img.size, 255)
-                noise = Image.effect_noise(paper.size, random.randint(10, 30))
-                a4_img = Image.blend(a4_img.convert('RGB'), 
-                                   Image.merge('RGB', [noise]*3), 
-                                   0.02)
-            
-            # Convert to RGBA if not already
+            # convert document to grayscale if needed
             if img.mode != 'RGBA':
-                img = img.convert('RGBA')
+                img = img.convert('L').convert('RGBA')
             
-            final_img = Image.new('RGBA', a4_img.size, (255, 255, 255, 255))
+            #add a shadow
+            shadow = Image.new('L', (doc_width + 20, doc_height + 20), 255)
+            shadow_draw = ImageDraw.Draw(shadow)
+            for i in range(10, 0, -1):
+                shadow_draw.rectangle([i, i, doc_width + 20 - i, doc_height + 20 - i], 
+                                   outline=200, width=1)
+            shadow = shadow.convert('RGBA')
+            shadow = Image.eval(shadow, lambda x: 0 if x < 255 else 0) 
+            a4_img.alpha_composite(shadow, (x - 10, y - 10))
             
-            # Paste the A4 background (convert to RGBA if needed)
-            if a4_img.mode != 'RGBA':
-                a4_img = a4_img.convert('RGBA')
-            final_img.paste(a4_img, (0, 0), a4_img)
+            # paste the document onto the A4 page
+            a4_img.paste(img, (x, y), img.split()[3] if img.mode == 'RGBA' else None)
             
-            # Paste the document
-            try:
-                temp_img = Image.new('RGBA', final_img.size, (0, 0, 0, 0))
-                temp_img.paste(img, (x, y), img)
-                final_img = Image.alpha_composite(final_img, temp_img)
-
-                if data and (data.get('AccountID') or data.get('HealthBenefitID')):
-                    annotation_lines = []
-                    # Get the exact field names from CSV
-                    acc_id = data.get('AccountID')
-                    health_id = data.get('HealthBenefitID')
-                    if acc_id:
-                        annotation_lines.append(f"Account: {acc_id}")
-                    if health_id:
-                        annotation_lines.append(f"Health: {health_id}")
-                    if annotation_lines:
-                        annotation_text = "\n".join(annotation_lines)
-                        draw_anno = ImageDraw.Draw(final_img)
-                        base_font_size = int(a4_height * 0.018) 
-                        # Try random handwriting fonts until one loads successfully
-                        random.shuffle(HANDWRITING_FONTS)
-                        hw_font = None
-                        for font_path in HANDWRITING_FONTS:
-                            try:
-                                hw_font = ImageFont.truetype(str(font_path), base_font_size)
-                                break
-                            except Exception:
-                                continue
-                        if hw_font is None:
-                            hw_font = ImageFont.load_default()
-                        bbox = draw_anno.multiline_textbbox((0, 0), annotation_text, font=hw_font, spacing=2)
-                        bbox = draw_anno.multiline_textbbox((0, 0), annotation_text, font=hw_font, spacing=2)
-                        text_w = bbox[2] - bbox[0]
-                        text_h = bbox[3] - bbox[1]
-                        
-                        padding = int(a4_width * 0.03)
-                        
-                        anno_x = x + img.width + padding
-                        anno_y = y
-                        
-                        if anno_x + text_w > a4_width - margin_x - padding:
-                            anno_x = max(margin_x + padding, x - text_w - padding)
-                        
-                        if anno_y + text_h > a4_height - margin_y - padding:
-                            anno_y = max(margin_y + padding, a4_height - margin_y - text_h - padding)
-                        
-                        if y < anno_y + text_h and y + img.height > anno_y:
-                            if y >= margin_y + padding + text_h:
-                                anno_y = y - text_h - padding
-                            elif y + img.height + padding + text_h <= a4_height - margin_y:
-                                anno_y = y + img.height + padding
-                        
-                        anno_x = max(margin_x + padding, min(anno_x, a4_width - margin_x - text_w - padding))
-                        anno_y = max(margin_y + padding, min(anno_y, a4_height - margin_y - text_h - padding))
-                        
-                        draw_anno.multiline_text(
-                            (anno_x, anno_y), 
-                            annotation_text, 
-                            font=hw_font, 
-                            fill=(80, 80, 80, 220),
-                            spacing=2
-                        )
-
-            except ValueError as e:
-                print(f"Warning: Error pasting image: {e}")
-                # Fallback to non-transparent paste if composite fails
-                final_img.paste(img.convert('RGB'), (x, y))
+            # add noise
+            noise = Image.effect_noise((a4_width, a4_height), 10)
+            noise = noise.convert('L')
+            noise = Image.merge('RGBA', (noise, noise, noise, Image.new('L', (a4_width, a4_height), 15)))
+            a4_img = Image.alpha_composite(a4_img, noise)
             
-            # Convert to grayscale then back to RGB for PDF compatibility
-            return final_img.convert('L').convert('RGB')
+            # add a border
+            border = Image.new('L', (doc_width + 10, doc_height + 10), 255)
+            border_draw = ImageDraw.Draw(border)
+            border_draw.rectangle([0, 0, doc_width + 9, doc_height + 9], 
+                               outline=200, width=1)
+            border = border.convert('RGBA')
+            border = Image.eval(border, lambda x: 0 if x < 255 else 0) 
+            a4_img.alpha_composite(border, (x - 5, y - 5))
+            
+            return a4_img.convert('L').convert('RGB')
             
         except Exception as e:
             print(f"Error during A4 composition: {e}")
-            return img.convert('L').convert('RGBA')  # Fallback to grayscale
             
+            return img.convert('RGB')
+
     def _get_optimal_font_size(self, draw, text, font_path, max_width, max_height, min_size=6, max_size=100):
         """Find the optimal font size that makes the text fit within max_width and max_height"""
         if not text or not font_path.exists():
@@ -320,18 +274,16 @@ class DocumentGenerator:
             
         draw = ImageDraw.Draw(img)
         
-        # Check for labeled areas in the spec - look for combined or separate fields
+        # check for labeled areas in the spec
         combined_areas = [f for f in self.spec.get('fields', []) 
                          if set(f['name'].split(',')).issuperset({'AccountID', 'HealthBenefitID'})]
         account_areas = [f for f in self.spec.get('fields', []) if f['name'] == 'AccountID']
         health_areas = [f for f in self.spec.get('fields', []) if f['name'] == 'HealthBenefitID']
         
-        # Select random handwriting fonts for each ID
-        fonts = random.sample(HANDWRITING_FONTS, 2)  # Get 2 unique random fonts
-        hw_font_path1 = fonts[0]
-        hw_font_path2 = fonts[1] if len(fonts) > 1 else fonts[0]
+        # select a single random handwriting font for both IDs to ensure consistency
+        hw_font_path = random.choice(HANDWRITING_FONTS)
         
-        # Handle combined AccountID,HealthBenefitID label
+        # handle combined AccountID,HealthBenefitID label
         if combined_areas and ('AccountID' in data or 'HealthBenefitID' in data):
             area = combined_areas[0]  # Use first matching area
             bbox = area['bbox']
@@ -347,9 +299,9 @@ class DocumentGenerator:
             if 'AccountID' in data and data['AccountID']:
                 account_text = f"Account: {data['AccountID']}"
                 # Calculate optimal font size for this text
-                font_size = self._get_optimal_font_size(draw, account_text, hw_font_path1, w, line_height * 0.9)
+                font_size = self._get_optimal_font_size(draw, account_text, hw_font_path, w, line_height * 0.9)
                 try:
-                    hw_font = ImageFont.truetype(str(hw_font_path1), font_size)
+                    hw_font = ImageFont.truetype(str(hw_font_path), font_size)
                     # Get text size to center it vertically within its line
                     text_bbox = draw.textbbox((0, 0), account_text, font=hw_font)
                     text_w = text_bbox[2] - text_bbox[0]
@@ -364,9 +316,9 @@ class DocumentGenerator:
             if 'HealthBenefitID' in data and data['HealthBenefitID']:
                 health_text = f"Health: {data['HealthBenefitID']}"
                 # Calculate optimal font size for this text
-                font_size = self._get_optimal_font_size(draw, health_text, hw_font_path2, w, line_height * 0.9)
+                font_size = self._get_optimal_font_size(draw, health_text, hw_font_path, w, line_height * 0.9)
                 try:
-                    hw_font = ImageFont.truetype(str(hw_font_path2), font_size)
+                    hw_font = ImageFont.truetype(str(hw_font_path), font_size)
                     # Get text size to center it vertically within its line
                     text_bbox = draw.textbbox((0, 0), health_text, font=hw_font)
                     text_w = text_bbox[2] - text_bbox[0]
@@ -377,9 +329,8 @@ class DocumentGenerator:
                 except Exception as e:
                     print(f"Error rendering HealthBenefitID: {e}")
                     
-        # Handle separate AccountID and HealthBenefitID labels (for documents on A4)
+        # handle separate AccountID and HealthBenefitID labels (for documents on A4)
         else:
-            # Add AccountID if present in data and we have a labeled area
             if 'AccountID' in data and data['AccountID'] and account_areas:
                 area = account_areas[0]
                 bbox = area['bbox']
@@ -389,11 +340,10 @@ class DocumentGenerator:
                 h = int(bbox[3] * img.height)
                 
                 account_text = f"Account: {data['AccountID']}"
-                font_size = self._get_optimal_font_size(draw, account_text, hw_font_path1, w, h)
+                font_size = self._get_optimal_font_size(draw, account_text, hw_font_path, w, h)
                 
                 try:
-                    hw_font = ImageFont.truetype(str(hw_font_path1), font_size)
-                    # Center text in the box
+                    hw_font = ImageFont.truetype(str(hw_font_path), font_size)
                     text_bbox = draw.textbbox((0, 0), account_text, font=hw_font)
                     text_w = text_bbox[2] - text_bbox[0]
                     text_h = text_bbox[3] - text_bbox[1]
@@ -403,7 +353,6 @@ class DocumentGenerator:
                 except Exception as e:
                     print(f"Error rendering AccountID: {e}")
             
-            # Add HealthBenefitID if present in data and we have a labeled area
             if 'HealthBenefitID' in data and data['HealthBenefitID'] and health_areas:
                 area = health_areas[0]
                 bbox = area['bbox']
@@ -413,11 +362,10 @@ class DocumentGenerator:
                 h = int(bbox[3] * img.height)
                 
                 health_text = f"Health: {data['HealthBenefitID']}"
-                font_size = self._get_optimal_font_size(draw, health_text, hw_font_path2, w, h)
+                font_size = self._get_optimal_font_size(draw, health_text, hw_font_path, w, h)
                 
                 try:
-                    hw_font = ImageFont.truetype(str(hw_font_path2), font_size)
-                    # Center text in the box
+                    hw_font = ImageFont.truetype(str(hw_font_path), font_size)
                     text_bbox = draw.textbbox((0, 0), health_text, font=hw_font)
                     text_w = text_bbox[2] - text_bbox[0]
                     text_h = text_bbox[3] - text_bbox[1]
@@ -610,14 +558,23 @@ class DocumentGenerator:
             if output_path is None:
                 return img
             
-            # for documents with ID fields, add handwritten annotations and save directly
+            # for documents with ID fields, add handwritten annotations, apply artifacts, and save
             if has_id_fields:
                 img = self._add_handwritten_annotations(img, data)
+                # Always apply artifacts to full-page documents
+                img = self._add_printer_artifacts(img)
+                # Apply DPI distortion / noise effects (shrink + enlarge) for realistic pixelation
+                if self.quality == 'unclear':
+                    img = self._add_noise_effects(img)
+                img = img.convert('RGB')  # Convert to RGB before saving
                 img.save(output_path, 'PNG', quality=95, dpi=(300, 300))
                 return img
                 
-            # for regular documents, composite on A4 and save
+            # for regular documents, composite on A4 (which includes artifacts) and save
             final_img = self._composite_on_a4(img, data)
+            # Apply DPI distortion after compositing for consistent texture (only if quality is unclear)
+            if self.quality == 'unclear':
+                final_img = self._add_noise_effects(final_img)
             final_img.save(output_path, 'PNG', quality=95, dpi=(300, 300))
             return final_img
 
