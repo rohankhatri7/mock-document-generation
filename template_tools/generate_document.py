@@ -427,6 +427,16 @@ class DocumentGenerator:
         return final
 
 # batch / parallel helpers
+def _make_output_stem(stem: str, quality: str) -> str:
+    """Return the base filename stem adjusted for quality.
+
+    If quality == 'unclear' we replace any trailing '_clean' with
+    '_unclean'. Otherwise we leave the stem untouched.
+    """
+    if quality == 'unclear':
+        return stem[:-6] + '_unclean' if stem.endswith('_clean') else f"{stem}_unclean"
+    return stem
+
 def _render_worker(task):
     tpl, spec, qual, row, out = task
     gen = DocumentGenerator(tpl, spec, None, 12, qual)
@@ -439,7 +449,7 @@ def generate_batch_parallel(generator, tpl, spec, qual,
         return generate_batch(generator, rows, out_dir, count)
     tasks = []
     for i in range(count):
-        out = Path(out_dir) / f"{tpl.stem}_{i + 1}.png"
+        out = Path(out_dir) / f"{_make_output_stem(tpl.stem, qual)}_{i + 1}.png"
         tasks.append((tpl, spec, qual, rows[i], out))
     with ProcessPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(_render_worker, tasks))
@@ -449,7 +459,7 @@ def generate_batch(generator, rows, out_dir, count=None):
     count = min(count, len(rows)) if count else len(rows)
     files = []
     for i in range(count):
-        out = Path(out_dir) / f"document{i + 1}.png"
+        out = Path(out_dir) / f"{_make_output_stem(generator.template.stem, generator.quality)}{i + 1 if count>1 else ''}.png"
         generator.generate(rows[i], output_path=out)
         files.append(str(out))
     return files
