@@ -9,7 +9,6 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
-# constants
 FONTS_DIR      = Path(__file__).parent.parent / 'fonts'
 DEFAULT_FONT   = FONTS_DIR / 'OpenSans_SemiCondensed-Regular.ttf'
 SIGNATURE_FONT = FONTS_DIR / 'signature.ttf'
@@ -29,7 +28,7 @@ DOCUMENT_SUBTYPES = {
 # random-placement tuning
 A4_W, A4_H  = 2480, 3508
 MARGIN      = 50
-MIN_SCALE   = 0.55 
+MIN_SCALE   = 0.55
 MAX_SCALE   = 0.90
 
 
@@ -41,10 +40,12 @@ class DocumentGenerator:
         self.font_path  = str(font_path) if font_path else (str(DEFAULT_FONT) if DEFAULT_FONT.exists() else None)
         self.font_size  = font_size
         self.quality    = quality.lower() if quality.lower() in ('clear', 'unclear') else 'unclear'
-        self.font_cache = {}   
+        self.font_cache = {}
+
     def _load_spec(self, p):
         with open(p) as f:
             return json.load(f)
+
     def _get_font(self, key, default_size=None):
         size = default_size or self.font_size
         ck   = f'{key}_{size}'
@@ -54,17 +55,18 @@ class DocumentGenerator:
             except Exception:
                 self.font_cache[ck] = ImageFont.load_default()
         return self.font_cache[ck]
+
     def _add_noise_effects(self, img):
         if self.quality != 'unclear':
             return img.convert('RGBA')
 
         img   = img.convert('RGBA')
         orig  = img.size
-        small = (max(20, int(orig[0]*random.uniform(.3, .5))),
-                 max(20, int(orig[1]*random.uniform(.3, .5))))
+        small = (max(20, int(orig[0] * random.uniform(.3, .5))),
+                 max(20, int(orig[1] * random.uniform(.3, .5))))
         img   = img.resize(small, Image.Resampling.LANCZOS)
-        large = (int(small[0]*random.uniform(2, 3)),
-                 int(small[1]*random.uniform(2, 3)))
+        large = (int(small[0] * random.uniform(2, 3)),
+                 int(small[1] * random.uniform(2, 3)))
         img   = img.resize(large, Image.Resampling.NEAREST)
         img   = img.rotate(random.uniform(-2, 2), Image.BICUBIC, expand=True, fillcolor='white')
         img   = img.resize(orig, Image.Resampling.BILINEAR)
@@ -117,13 +119,15 @@ class DocumentGenerator:
                                         np.random.randint(15, 60), m[y0:y0 + sh, :])
 
         alpha = (m > 0).astype(np.uint8) * 255
-        return Image.fromarray(np.dstack([m]*3 + [alpha]), 'RGBA')
+        return Image.fromarray(np.dstack([m] * 3 + [alpha]), 'RGBA')
+
     def _add_printer_artifacts(self, img, intensity=.02):
         base  = img.convert('L').convert('RGBA')
         arte  = self._fast_printer_artifacts(base.size, intensity)
         noise = Image.effect_noise(base.size, 10).convert('L')
         noise = Image.merge('RGBA', (noise, noise, noise, Image.new('L', base.size, 10)))
         return Image.alpha_composite(Image.alpha_composite(base, arte), noise)
+
     def _get_optimal_font_size(self, draw, text, font_path,
                                max_w, max_h, min_s=6, max_s=100):
         if not text or not font_path.exists():
@@ -134,13 +138,75 @@ class DocumentGenerator:
             try:
                 f   = ImageFont.truetype(str(font_path), mid)
                 bbox = draw.textbbox((0, 0), text, font=f)
-                if bbox[2]-bbox[0] <= max_w and bbox[3]-bbox[1] <= max_h:
+                if bbox[2] - bbox[0] <= max_w and bbox[3] - bbox[1] <= max_h:
                     best, lo = mid, mid + 1
                 else:
                     hi = mid - 1
             except Exception:
                 hi = mid - 1
         return best
+
+    def _find_random_position(self, bx, by, bw, bh, tw, th, placed, margin=4, attempts=300):
+        for _ in range(attempts):
+            x = random.randint(bx, bx + bw - tw)
+            y = random.randint(by, by + bh - th)
+            nb = (x - margin, y - margin, x + tw + margin, y + th + margin)
+            if all(not (nb[0] < p[2] and nb[2] > p[0] and
+                        nb[1] < p[3] and nb[3] > p[1]) for p in placed):
+                placed.append(nb)
+                return x, y
+        return None, None
+        for _ in range(attempts):
+            x = random.randint(bx, bx + bw - tw)
+            y = random.randint(by, by + bh - th)
+            nb = (x - margin, y - margin, x + tw + margin, y + th + margin)
+            if all(not (nb[0] < p[2] and nb[2] > p[0] and
+                        nb[1] < p[3] and nb[3] > p[1]) for p in placed):
+                placed.append(nb)
+                return x, y
+        return None, None
+
+    def _draw_id_in_box(self, draw, box_px, txt, hw_font_path, placed):
+        bx, by, bw, bh = box_px
+        max_fs = self._get_optimal_font_size(draw, txt, hw_font_path, bw, bh)
+        max_fs = min(max_fs, int(bh * 0.4))  # <= 40 % box height
+        if max_fs < 6:
+            return  # too small to be legible
+        fs = int(max_fs * random.uniform(0.65, 0.9))
+        f  = ImageFont.truetype(str(hw_font_path), fs)
+        tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
+        while (tw > bw or th > bh) and fs > 6:
+            fs = max(6, int(fs * 0.9))
+            f  = ImageFont.truetype(str(hw_font_path), fs)
+            tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
+
+        x, y = self._find_random_position(bx, by, bw, bh, tw, th, placed)
+        if x is None:
+            # could not find a non-overlapping spot – shrink & centre
+            fs = max(6, int(fs * 0.8))
+            f  = ImageFont.truetype(str(hw_font_path), fs)
+            tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
+            x = bx + (bw - tw) // 2
+            y = by + (bh - th) // 2
+            placed.append((x, y, x + tw, y + th))
+        draw.text((x, y), txt, font=f, fill=(80, 80, 80, 220))
+
+    def _split_box(self, box_px, orientation='auto'):
+        bx, by, bw, bh = box_px
+        if orientation == 'auto':
+            orientation = 'h' if bw >= bh else 'v'
+        if orientation == 'h':  # horizontal split (left / right)
+            mid = bx + bw // 2
+            return (
+                (bx,      by, mid - bx, bh),
+                (mid,     by, bx + bw - mid, bh)
+            )
+        else:  # vertical split (top / bottom)
+            mid = by + bh // 2
+            return (
+                (bx, by, bw, mid - by),
+                (bx, mid, bw, by + bh - mid)
+            )
 
     def _add_handwritten_annotations(self, img, data):
         draw = ImageDraw.Draw(img)
@@ -150,54 +216,46 @@ class DocumentGenerator:
         health_areas   = [f for f in self.spec.get('fields', []) if f['name'] == 'HealthBenefitID']
         hw_font_path   = random.choice(HANDWRITING_FONTS)
 
-        # combined label
+        placed = []  # track all bounding boxes across boxes
+
+        # combined label box
         if combined_areas and ('AccountID' in data or 'HealthBenefitID' in data):
             area = combined_areas[0]
             bx, by, bw, bh = area['bbox']
-            x, y, w, h = (int(bx * img.width), int(by * img.height),
-                          int(bw * img.width), int(bh * img.height))
-            line_h = h // 2
-            if 'AccountID' in data and data['AccountID']:
-                t = str(data['AccountID'])
-                fs = self._get_optimal_font_size(draw, t, hw_font_path, w, int(line_h * .9))
-                f  = ImageFont.truetype(str(hw_font_path), fs)
-                th = draw.textbbox((0, 0), t, font=f)[3]
-                draw.text((x, y + (line_h - th)//2), t, font=f, fill=(80, 80, 80, 220))
-            if 'HealthBenefitID' in data and data['HealthBenefitID']:
-                t = str(data['HealthBenefitID'])
-                fs = self._get_optimal_font_size(draw, t, hw_font_path, w, int(line_h * .9))
-                f  = ImageFont.truetype(str(hw_font_path), fs)
-                th = draw.textbbox((0, 0), t, font=f)[3]
-                draw.text((x, y + line_h + (line_h - th)//2), t, font=f, fill=(80, 80, 80, 220))
+            box_px = (int(bx * img.width),
+                      int(by * img.height),
+                      int(bw * img.width),
+                      int(bh * img.height))
+            # split orientation auto
+            boxA, boxB = self._split_box(box_px)
+            id_pairs = [('AccountID', boxA), ('HealthBenefitID', boxB)]
+            random.shuffle(id_pairs)  # randomise who gets top/left vs bottom/right
+            for key, sub_box in id_pairs:
+                if key in data and data[key]:
+                    self._draw_id_in_box(
+                        draw, sub_box, str(data[key]), hw_font_path, placed)
             return img
 
-        # separate labels
-        if 'AccountID' in data and data['AccountID'] and account_areas:
-            area = account_areas[0]
+        # separate label boxes
+        field_map = (
+            ('AccountID', account_areas),
+            ('HealthBenefitID', health_areas)
+        )
+        for key, areas in field_map:
+            if key not in data or not data[key] or not areas:
+                continue
+            area = areas[0]
             bx, by, bw, bh = area['bbox']
-            x, y, w, h = (int(bx * img.width), int(by * img.height),
-                          int(bw * img.width), int(bh * img.height))
-            t  = str(data['AccountID'])
-            fs = self._get_optimal_font_size(draw, t, hw_font_path, w, h)
-            f  = ImageFont.truetype(str(hw_font_path), fs)
-            tw, th = [b - a for a, b in zip(draw.textbbox((0, 0), t, font=f)[:2],
-                                            draw.textbbox((0, 0), t, font=f)[2:])]
-            draw.text((x + (w - tw)//2, y + (h - th)//2), t, font=f,
-                      fill=(80, 80, 80, 220))
+            box_px = (int(bx * img.width),
+                      int(by * img.height),
+                      int(bw * img.width),
+                      int(bh * img.height))
+            self._draw_id_in_box(
+                draw, box_px, str(data[key]), hw_font_path, placed)
 
-        if 'HealthBenefitID' in data and data['HealthBenefitID'] and health_areas:
-            area = health_areas[0]
-            bx, by, bw, bh = area['bbox']
-            x, y, w, h = (int(bx * img.width), int(by * img.height),
-                          int(bw * img.width), int(bh * img.height))
-            t  = str(data['HealthBenefitID'])
-            fs = self._get_optimal_font_size(draw, t, hw_font_path, w, h)
-            f  = ImageFont.truetype(str(hw_font_path), fs)
-            tw, th = [b - a for a, b in zip(draw.textbbox((0, 0), t, font=f)[:2],
-                                            draw.textbbox((0, 0), t, font=f)[2:])]
-            draw.text((x + (w - tw)//2, y + (h - th)//2), t, font=f,
-                      fill=(80, 80, 80, 220))
         return img
+
+    # add random IDs directly on A4
 
     def _add_random_ids_on_a4(self, a4_img, doc_bbox, data):
         draw = ImageDraw.Draw(a4_img)
@@ -212,12 +270,13 @@ class DocumentGenerator:
         hw_font_path = random.choice(HANDWRITING_FONTS)
         for _, txt in pairs:
             fs = self._get_optimal_font_size(draw, txt, hw_font_path, 250, 120, 12, 48)
+            fs = int(fs * random.uniform(0.6, 0.9))
             f  = ImageFont.truetype(str(hw_font_path), fs)
             tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
             for _ in range(100):
                 x = random.randint(50, a4_w - tw - 50)
                 y = random.randint(50, a4_h - th - 50)
-                box = (x, y, x + tw, y + th)
+                box = (x - 4, y - 4, x + tw + 4, y + th + 4)
                 if (box[2] < d1 or box[0] > d3 or box[3] < d2 or box[1] > d4) and \
                    all(not (box[0] < b[2] and box[2] > b[0] and box[1] < b[3] and box[3] > b[1]) for b in placed):
                     placed.append(box)
@@ -225,20 +284,15 @@ class DocumentGenerator:
                     break
         return a4_img
 
+    # random placement on A4
+
     def _place_doc_on_a4(self, doc_img):
-        """
-        Randomly rescale `doc_img` (PNG with transparency) and paste it onto
-        a brand-new A4 canvas. Guarantees:
-          • the doc stays entirely on the page (margin honoured)
-          • returns the exact bounding-box so we can keep IDs clear
-        """
         a4 = Image.new('L', (A4_W, A4_H), 255).convert('RGBA')
         a4 = self._add_printer_artifacts(a4)
 
         # pick a random target size
         max_w = A4_W - 2 * MARGIN
         max_h = A4_H - 2 * MARGIN
-
         scale_hi = min(max_w / doc_img.width, max_h / doc_img.height, MAX_SCALE)
         scale_lo = max(MIN_SCALE, min(scale_hi * 0.5, MIN_SCALE))
         scale    = random.uniform(scale_lo, scale_hi)
@@ -247,7 +301,7 @@ class DocumentGenerator:
         new_h = int(doc_img.height * scale)
         doc   = doc_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # random top-left coord within allowed rectangle
+        # random top-left
         x0 = random.randint(MARGIN, A4_W - new_w - MARGIN)
         y0 = random.randint(MARGIN, A4_H - new_h - MARGIN)
 
@@ -256,17 +310,13 @@ class DocumentGenerator:
         bbox = (x0, y0, x0 + new_w, y0 + new_h)
         return a4.convert('L').convert('RGB'), bbox
 
+    # main generator
+
     def generate(self, data, output_path=None):
-        """
-        Render a single document according to CSV row `data`.
-        Behaviour is the same as before, EXCEPT:
-          • For doc-types that were centred on blank A4 sheets,
-            they are now randomly scaled & placed.
-        """
         img  = self.template.copy()
         draw = ImageDraw.Draw(img)
 
-        # render template fields
+        # render template fields (unchanged)
         for field in self.spec.get('fields', []):
             name = field['name']
             if name in ('AccountID', 'HealthBenefitID') or \
@@ -353,7 +403,7 @@ class DocumentGenerator:
             draw.text((ax + 5, ay + 2), text, font=f,
                       fill=(0, 0, 0, 255))
 
-        # decide which output path
+        # IDs & final placement
         has_ids = any(set(f['name'].split(',')).issuperset({'AccountID', 'HealthBenefitID'})
                       or f['name'] in ('AccountID', 'HealthBenefitID')
                       for f in self.spec.get('fields', []))
@@ -364,11 +414,9 @@ class DocumentGenerator:
             if self.quality == 'unclear':
                 img = self._add_noise_effects(img)
             if output_path:
-                img.convert('RGB').save(output_path, 'PNG', quality=95,
-                                        dpi=(300, 300))
+                img.convert('RGB').save(output_path, 'PNG', quality=95, dpi=(300, 300))
             return img
 
-        # random placement on A4
         final, bbox = self._place_doc_on_a4(img)
         final       = self._add_random_ids_on_a4(final, bbox, data)
         if self.quality == 'unclear':
@@ -377,7 +425,7 @@ class DocumentGenerator:
             final.save(output_path, 'PNG', quality=95, dpi=(300, 300))
         return final
 
-# batch / parallel processing
+# batch / parallel helpers
 def _render_worker(task):
     tpl, spec, qual, row, out = task
     gen = DocumentGenerator(tpl, spec, None, 12, qual)
@@ -405,7 +453,8 @@ def generate_batch(generator, rows, out_dir, count=None):
         files.append(str(out))
     return files
 
-# cli args
+# CLI
+
 def main():
     p = argparse.ArgumentParser(description='Generate documents')
     p.add_argument('doc_type')
