@@ -22,7 +22,7 @@ HANDWRITING_FONTS = [
 DOCUMENT_SUBTYPES = {
     'passport': ['us_passport', 'india_passport'],
     'paystub' : ['adp_paystub', 'paychex_paystub'],
-    'ssn'     : ['us_ssn'],
+    'ssn'     : ['ssn1_ssn'],
     'empletter': ['empletter1_empletter'],  
 }
 
@@ -40,6 +40,7 @@ class DocumentGenerator:
         self.spec       = self._load_spec(spec_path)
         self.font_path  = str(font_path) if font_path else (str(DEFAULT_FONT) if DEFAULT_FONT.exists() else None)
         self.font_size  = font_size
+        self.template_stem = Path(template_path).stem
         self.quality    = quality.lower() if quality.lower() in ('clear', 'unclear') else 'unclear'
         self.font_cache = {}
 
@@ -109,15 +110,25 @@ class DocumentGenerator:
 
         # vertical streaks
         for _ in range(random.randint(1, 5)):
-            x0, sw = np.random.randint(0, w), random.randint(1, 3)
-            m[:, x0:x0 + sw] = np.where(np.random.rand(h, sw) < .7,
-                                        np.random.randint(20, 80), m[:, x0:x0 + sw])
+            sw  = np.random.randint(1, 3)           # 1 or 2 pixels wide
+            x0  = np.random.randint(0, w - sw + 1)  # keep streak fully inside the image
+            m[:, x0:x0 + sw] = np.where(
+                np.random.rand(h, sw) < .7,
+                np.random.randint(20, 80, (h, sw)),
+                m[:, x0:x0 + sw]
+            )
 
-        # horizontal streak
+
+        # horizontal streak --------------------------------------------------------
         if random.random() < .3:
-            y0, sh = np.random.randint(0, h), random.randint(1, 2)
-            m[y0:y0 + sh, :] = np.where(np.random.rand(sh, w) < .6,
-                                        np.random.randint(15, 60), m[y0:y0 + sh, :])
+            sh  = np.random.randint(1, 3)           # 1 or 2 rows high
+            y0  = np.random.randint(0, h - sh + 1)
+            m[y0:y0 + sh, :] = np.where(
+                np.random.rand(sh, w) < .6,
+                np.random.randint(15, 60, (sh, w)),
+        m[y0:y0 + sh, :]
+    )
+
 
         alpha = (m > 0).astype(np.uint8) * 255
         return Image.fromarray(np.dstack([m] * 3 + [alpha]), 'RGBA')
@@ -291,12 +302,15 @@ class DocumentGenerator:
         a4 = Image.new('L', (A4_W, A4_H), 255).convert('RGBA')
         a4 = self._add_printer_artifacts(a4)
 
-        # pick a random target size
+        # pick a random target size and then enlarge by 30%
         max_w = A4_W - 2 * MARGIN
         max_h = A4_H - 2 * MARGIN
         scale_hi = min(max_w / doc_img.width, max_h / doc_img.height, MAX_SCALE)
         scale_lo = max(MIN_SCALE, min(scale_hi * 0.5, MIN_SCALE))
         scale    = random.uniform(scale_lo, scale_hi)
+
+        # enlarge by 30 % but keep within limits
+        scale = min(scale * 1.3, max_w / doc_img.width, max_h / doc_img.height, MAX_SCALE)
 
         new_w = int(doc_img.width * scale)
         new_h = int(doc_img.height * scale)
@@ -459,7 +473,7 @@ def generate_batch(generator, rows, out_dir, count=None):
     count = min(count, len(rows)) if count else len(rows)
     files = []
     for i in range(count):
-        out = Path(out_dir) / f"{_make_output_stem(generator.template.stem, generator.quality)}{i + 1 if count>1 else ''}.png"
+        out = Path(out_dir) / f"{_make_output_stem(generator.template_stem, generator.quality)}{i + 1 if count>1 else ''}.png"
         generator.generate(rows[i], output_path=out)
         files.append(str(out))
     return files
