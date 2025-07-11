@@ -24,7 +24,8 @@ DOCUMENT_SUBTYPES = {
     'paystub' : ['adp_paystub', 'paychex_paystub'],
     'ssn'     : ['ssn1_ssn'],
     'empletter': ['empletter1_empletter'], 
-    'taxreturn': ['w4_taxreturn'] 
+    'taxreturn': ['w4_taxreturn'], 
+    'i766': ['form_i766']
 }
 
 # random-placement tuning
