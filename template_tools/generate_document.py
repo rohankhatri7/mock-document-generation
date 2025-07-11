@@ -118,8 +118,7 @@ class DocumentGenerator:
                 m[:, x0:x0 + sw]
             )
 
-
-        # horizontal streak --------------------------------------------------------
+        # horizontal streak 
         if random.random() < .3:
             sh  = np.random.randint(1, 3)           # 1 or 2 rows high
             y0  = np.random.randint(0, h - sh + 1)
@@ -181,10 +180,10 @@ class DocumentGenerator:
     def _draw_id_in_box(self, draw, box_px, txt, hw_font_path, placed):
         bx, by, bw, bh = box_px
         max_fs = self._get_optimal_font_size(draw, txt, hw_font_path, bw, bh)
-        max_fs = min(max_fs, int(bh * 0.4))  # <= 40 % box height
+        max_fs = min(max_fs, int(bh * 0.15))  # <= 40 % box height
         if max_fs < 6:
-            return  # too small to be legible
-        fs = int(max_fs * random.uniform(0.65, 0.9))
+            return 
+        fs = int(max_fs * random.uniform(0.45, 0.65))
         f  = ImageFont.truetype(str(hw_font_path), fs)
         tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
         while (tw > bw or th > bh) and fs > 6:
@@ -281,8 +280,8 @@ class DocumentGenerator:
         placed = []
         hw_font_path = random.choice(HANDWRITING_FONTS)
         for _, txt in pairs:
-            fs = self._get_optimal_font_size(draw, txt, hw_font_path, 250, 120, 12, 48)
-            fs = int(fs * random.uniform(0.6, 0.9))
+            fs = self._get_optimal_font_size(draw, txt, hw_font_path,250, 120, 12, 28)
+            fs = int(fs * random.uniform(0.45, 0.70))
             f  = ImageFont.truetype(str(hw_font_path), fs)
             tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
             for _ in range(100):
