@@ -23,6 +23,7 @@ DOCUMENT_SUBTYPES = {
     'passport': ['us_passport', 'india_passport'],
     'paystub' : ['adp_paystub', 'paychex_paystub'],
     'ssn'     : ['us_ssn'],
+    'empletter': ['empletter1_empletter'],  
 }
 
 # random-placement tuning
