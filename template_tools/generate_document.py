@@ -4,15 +4,12 @@ import os
 import io
 import random
 import argparse
-import datetime                                    # ← NEW
+import datetime                                    
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
-# --------------------------------------------------------------------
-# constants and globals
-# --------------------------------------------------------------------
 FONTS_DIR      = Path(__file__).parent.parent / 'fonts'
 DEFAULT_FONT   = FONTS_DIR / 'OpenSans_SemiCondensed-Regular.ttf'
 SIGNATURE_FONT = FONTS_DIR / 'signature.ttf'
@@ -33,16 +30,12 @@ DOCUMENT_SUBTYPES = {
     'authrep': ['form_authrep']
 }
 
-# A4 background (≈300 dpi)
+# A4 background
 A4_W, A4_H  = 2480, 3508
 MARGIN      = 50
 MIN_SCALE   = 0.55
 MAX_SCALE   = 0.90
 
-
-# --------------------------------------------------------------------
-# main generator class
-# --------------------------------------------------------------------
 class DocumentGenerator:
     def __init__(self, template_path, spec_path, font_path=None,
                  font_size=12, quality='unclear'):
@@ -54,7 +47,6 @@ class DocumentGenerator:
         self.quality    = quality.lower() if quality.lower() in ('clear', 'unclear') else 'unclear'
         self.font_cache = {}
 
-    # ----------------- utility helpers --------------------------------
     def _load_spec(self, p):
         with open(p) as f:
             return json.load(f)
@@ -69,7 +61,7 @@ class DocumentGenerator:
                 self.font_cache[ck] = ImageFont.load_default()
         return self.font_cache[ck]
 
-    # ----------------- noise / artefact helpers -----------------------
+    # noise / artefact helpers
     def _add_noise_effects(self, img):
         if self.quality != 'unclear':
             return img.convert('RGBA')
@@ -150,7 +142,7 @@ class DocumentGenerator:
         noise = Image.merge('RGBA', (noise, noise, noise, Image.new('L', base.size, 10)))
         return Image.alpha_composite(Image.alpha_composite(base, arte), noise)
 
-    # ----------------- font sizing & placement helpers ----------------
+    # font sizing & placement helpers
     def _get_optimal_font_size(self, draw, text, font_path,
                                max_w, max_h, min_s=6, max_s=100):
         if not text or not font_path.exists():
@@ -318,14 +310,11 @@ class DocumentGenerator:
         bbox = (x0, y0, x0 + new_w, y0 + new_h)
         return a4.convert('L').convert('RGB'), bbox
 
-    # ------------------------------------------------------------------
-    # core: generate()
-    # ------------------------------------------------------------------
     def generate(self, data, output_path=None):
         img  = self.template.copy()
         draw = ImageDraw.Draw(img)
 
-        # -------- render template fields --------------------------------
+        # render template fields
         for field in self.spec.get('fields', []):
             name = field['name']
             if name in ('AccountID', 'HealthBenefitID') or \
@@ -353,7 +342,7 @@ class DocumentGenerator:
                     processed.append((field_names[i], i, i))
                     i += 1
 
-            # -------- ADDRESS / EMAIL / DATE / TEL logic -----------------
+            # ADDRESS / EMAIL / DATE / TEL logic
             values = []
             for fn, _, _ in processed:
                 fn_lower = fn.lower()
@@ -425,7 +414,7 @@ class DocumentGenerator:
                           fill=(0, 0, 0, 255))
                 y_off += (bb[3] - bb[1]) * 1.08
 
-        # -------- handwritten signatures (support multiple boxes) -------
+        # handwritten signatures (support multiple boxes)
         sig_fields = [f for f in self.spec['fields']
                       if f['name'].strip().lower() == 'signature']
         if 'FullName' in data and sig_fields:
@@ -453,7 +442,7 @@ class DocumentGenerator:
                 draw.text((ax + 5, ay + 2), text, font=f,
                           fill=(0, 0, 0, 255))
 
-        # -------- IDs & final placement --------------------------------
+        # IDs & final placement
         has_ids = any(set(f['name'].split(',')).issuperset({'AccountID', 'HealthBenefitID'})
                       or f['name'] in ('AccountID', 'HealthBenefitID')
                       for f in self.spec.get('fields', []))
@@ -476,9 +465,7 @@ class DocumentGenerator:
         return final
 
 
-# --------------------------------------------------------------------
 # batch / parallel helpers
-# --------------------------------------------------------------------
 def _make_output_stem(stem: str, quality: str) -> str:
     if quality == 'unclear':
         return stem[:-6] + '_unclean' if stem.endswith('_clean') else f"{stem}_unclean"
@@ -512,9 +499,6 @@ def generate_batch(generator, rows, out_dir, count=None):
     return files
 
 
-# --------------------------------------------------------------------
-# command‑line interface
-# --------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser(description='Generate documents')
     p.add_argument('doc_type')
