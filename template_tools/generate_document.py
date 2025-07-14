@@ -336,8 +336,9 @@ class DocumentGenerator:
         for field in self.spec.get('fields', []):
             name = field['name']
             if name in ('AccountID', 'HealthBenefitID') or \
-               set(name.split(',')).issuperset({'AccountID', 'HealthBenefitID'}):
+            set(name.split(',')).issuperset({'AccountID', 'HealthBenefitID'}):
                 continue
+
             x, y, w, h = field['bbox']
             if w <= 0 or h <= 0:
                 continue
@@ -346,6 +347,7 @@ class DocumentGenerator:
             abs_w = int(w * self.spec['width'])
             abs_h = int(h * self.spec['height'])
 
+            # split any comma‑separated label names
             field_names = [n.strip() for n in name.split(',')]
             processed = []
             i = 0
@@ -357,16 +359,9 @@ class DocumentGenerator:
                 else:
                     processed.append((field_names[i], i, i))
                     i += 1
+
+            # -------- NEW ADDRESS HANDLING LIVES IN THIS LOOP --------
             values = []
-            for fn, _, _ in processed:
-                if fn == 'City,State':
-                    city  = str(data.get('City', '')).strip()
-                    state = str(data.get('State', '')).strip()
-                    if city and state:
-                        values.append(f"{city}, {state}")
-                    elif city or state:
-                        values.append(city or state)
-                values = []
             for fn, _, _ in processed:
                 if fn == 'City,State':
                     city  = str(data.get('City',  '')).strip()
@@ -376,8 +371,7 @@ class DocumentGenerator:
                     elif city or state:
                         values.append(city or state)
 
-                # address
-                elif fn == 'Address':                       
+                elif fn == 'Address':                 # single‑line mailing address
                     parts = [
                         data.get('Street1', '').strip(),
                         data.get('Street2', '').strip(),
@@ -385,7 +379,7 @@ class DocumentGenerator:
                         data.get('State',   '').strip(),
                         data.get('Zip',     '').strip()
                     ]
-                    addr_line = " ".join([p for p in parts if p])  # drop blanks, join with spaces
+                    addr_line = " ".join([p for p in parts if p])
                     if addr_line:
                         values.append(addr_line)
 
@@ -396,6 +390,7 @@ class DocumentGenerator:
 
             if not values:
                 continue
+
 
             best = 0
             for sz in range(12, 73):
