@@ -366,10 +366,34 @@ class DocumentGenerator:
                         values.append(f"{city}, {state}")
                     elif city or state:
                         values.append(city or state)
+                values = []
+            for fn, _, _ in processed:
+                if fn == 'City,State':
+                    city  = str(data.get('City',  '')).strip()
+                    state = str(data.get('State', '')).strip()
+                    if city and state:
+                        values.append(f"{city}, {state}")
+                    elif city or state:
+                        values.append(city or state)
+
+                # address
+                elif fn == 'Address':                       
+                    parts = [
+                        data.get('Street1', '').strip(),
+                        data.get('Street2', '').strip(),
+                        data.get('City',    '').strip(),
+                        data.get('State',   '').strip(),
+                        data.get('Zip',     '').strip()
+                    ]
+                    addr_line = " ".join([p for p in parts if p])  # drop blanks, join with spaces
+                    if addr_line:
+                        values.append(addr_line)
+
                 else:
                     v = str(data.get(fn, '')).strip()
                     if v:
                         values.append(v)
+
             if not values:
                 continue
 
