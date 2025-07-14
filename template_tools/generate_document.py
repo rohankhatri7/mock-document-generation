@@ -4,11 +4,15 @@ import os
 import io
 import random
 import argparse
+import datetime                                    # ← NEW
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
+# --------------------------------------------------------------------
+# constants and globals
+# --------------------------------------------------------------------
 FONTS_DIR      = Path(__file__).parent.parent / 'fonts'
 DEFAULT_FONT   = FONTS_DIR / 'OpenSans_SemiCondensed-Regular.ttf'
 SIGNATURE_FONT = FONTS_DIR / 'signature.ttf'
@@ -20,21 +24,25 @@ HANDWRITING_FONTS = [
 ]
 
 DOCUMENT_SUBTYPES = {
-    'passport': ['us_passport', 'india_passport'],
-    'paystub' : ['adp_paystub', 'paychex_paystub'],
-    'ssn'     : ['ssn1_ssn'],
-    'empletter': ['empletter1_empletter'], 
-    'taxreturn': ['w4_taxreturn'], 
-    'i766': ['form_i766']
+    'passport':  ['us_passport', 'india_passport'],
+    'paystub':   ['adp_paystub', 'paychex_paystub'],
+    'ssn':       ['ssn1_ssn'],
+    'empletter': ['empletter1_empletter'],
+    'taxreturn': ['w4_taxreturn'],
+    'i766':      ['form_i766'],
+    'authrep': ['form_authrep']
 }
 
-# random-placement tuning
+# A4 background (≈300 dpi)
 A4_W, A4_H  = 2480, 3508
 MARGIN      = 50
 MIN_SCALE   = 0.55
 MAX_SCALE   = 0.90
 
 
+# --------------------------------------------------------------------
+# main generator class
+# --------------------------------------------------------------------
 class DocumentGenerator:
     def __init__(self, template_path, spec_path, font_path=None,
                  font_size=12, quality='unclear'):
@@ -46,6 +54,7 @@ class DocumentGenerator:
         self.quality    = quality.lower() if quality.lower() in ('clear', 'unclear') else 'unclear'
         self.font_cache = {}
 
+    # ----------------- utility helpers --------------------------------
     def _load_spec(self, p):
         with open(p) as f:
             return json.load(f)
@@ -60,6 +69,7 @@ class DocumentGenerator:
                 self.font_cache[ck] = ImageFont.load_default()
         return self.font_cache[ck]
 
+    # ----------------- noise / artefact helpers -----------------------
     def _add_noise_effects(self, img):
         if self.quality != 'unclear':
             return img.convert('RGBA')
@@ -112,24 +122,23 @@ class DocumentGenerator:
 
         # vertical streaks
         for _ in range(random.randint(1, 5)):
-            sw  = np.random.randint(1, 3)           # 1 or 2 pixels wide
-            x0  = np.random.randint(0, w - sw + 1)  # keep streak fully inside the image
+            sw  = np.random.randint(1, 3)
+            x0  = np.random.randint(0, w - sw + 1)
             m[:, x0:x0 + sw] = np.where(
                 np.random.rand(h, sw) < .7,
                 np.random.randint(20, 80, (h, sw)),
                 m[:, x0:x0 + sw]
             )
 
-        # horizontal streak 
+        # horizontal streak
         if random.random() < .3:
-            sh  = np.random.randint(1, 3)           # 1 or 2 rows high
+            sh  = np.random.randint(1, 3)
             y0  = np.random.randint(0, h - sh + 1)
             m[y0:y0 + sh, :] = np.where(
                 np.random.rand(sh, w) < .6,
                 np.random.randint(15, 60, (sh, w)),
-        m[y0:y0 + sh, :]
-    )
-
+                m[y0:y0 + sh, :]
+            )
 
         alpha = (m > 0).astype(np.uint8) * 255
         return Image.fromarray(np.dstack([m] * 3 + [alpha]), 'RGBA')
@@ -141,6 +150,7 @@ class DocumentGenerator:
         noise = Image.merge('RGBA', (noise, noise, noise, Image.new('L', base.size, 10)))
         return Image.alpha_composite(Image.alpha_composite(base, arte), noise)
 
+    # ----------------- font sizing & placement helpers ----------------
     def _get_optimal_font_size(self, draw, text, font_path,
                                max_w, max_h, min_s=6, max_s=100):
         if not text or not font_path.exists():
@@ -169,22 +179,13 @@ class DocumentGenerator:
                 placed.append(nb)
                 return x, y
         return None, None
-        for _ in range(attempts):
-            x = random.randint(bx, bx + bw - tw)
-            y = random.randint(by, by + bh - th)
-            nb = (x - margin, y - margin, x + tw + margin, y + th + margin)
-            if all(not (nb[0] < p[2] and nb[2] > p[0] and
-                        nb[1] < p[3] and nb[3] > p[1]) for p in placed):
-                placed.append(nb)
-                return x, y
-        return None, None
 
     def _draw_id_in_box(self, draw, box_px, txt, hw_font_path, placed):
         bx, by, bw, bh = box_px
         max_fs = self._get_optimal_font_size(draw, txt, hw_font_path, bw, bh)
-        max_fs = min(max_fs, int(bh * 0.15))  # <= 40 % box height
+        max_fs = min(max_fs, int(bh * 0.15))
         if max_fs < 6:
-            return 
+            return
         fs = int(max_fs * random.uniform(0.45, 0.65))
         f  = ImageFont.truetype(str(hw_font_path), fs)
         tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
@@ -195,7 +196,6 @@ class DocumentGenerator:
 
         x, y = self._find_random_position(bx, by, bw, bh, tw, th, placed)
         if x is None:
-            # could not find a non-overlapping spot – shrink & centre
             fs = max(6, int(fs * 0.8))
             f  = ImageFont.truetype(str(hw_font_path), fs)
             tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
@@ -208,13 +208,13 @@ class DocumentGenerator:
         bx, by, bw, bh = box_px
         if orientation == 'auto':
             orientation = 'h' if bw >= bh else 'v'
-        if orientation == 'h':  # horizontal split (left / right)
+        if orientation == 'h':
             mid = bx + bw // 2
             return (
                 (bx,      by, mid - bx, bh),
                 (mid,     by, bx + bw - mid, bh)
             )
-        else:  # vertical split (top / bottom)
+        else:
             mid = by + bh // 2
             return (
                 (bx, by, bw, mid - by),
@@ -229,9 +229,9 @@ class DocumentGenerator:
         health_areas   = [f for f in self.spec.get('fields', []) if f['name'] == 'HealthBenefitID']
         hw_font_path   = random.choice(HANDWRITING_FONTS)
 
-        placed = []  # track all bounding boxes across boxes
+        placed = []
 
-        # combined label box
+        # combined label
         if combined_areas and ('AccountID' in data or 'HealthBenefitID' in data):
             area = combined_areas[0]
             bx, by, bw, bh = area['bbox']
@@ -239,17 +239,16 @@ class DocumentGenerator:
                       int(by * img.height),
                       int(bw * img.width),
                       int(bh * img.height))
-            # split orientation auto
             boxA, boxB = self._split_box(box_px)
             id_pairs = [('AccountID', boxA), ('HealthBenefitID', boxB)]
-            random.shuffle(id_pairs)  # randomise who gets top/left vs bottom/right
+            random.shuffle(id_pairs)
             for key, sub_box in id_pairs:
                 if key in data and data[key]:
-                    self._draw_id_in_box(
-                        draw, sub_box, str(data[key]), hw_font_path, placed)
+                    self._draw_id_in_box(draw, sub_box, str(data[key]),
+                                         hw_font_path, placed)
             return img
 
-        # separate label boxes
+        # separate boxes
         field_map = (
             ('AccountID', account_areas),
             ('HealthBenefitID', health_areas)
@@ -263,12 +262,9 @@ class DocumentGenerator:
                       int(by * img.height),
                       int(bw * img.width),
                       int(bh * img.height))
-            self._draw_id_in_box(
-                draw, box_px, str(data[key]), hw_font_path, placed)
-
+            self._draw_id_in_box(draw, box_px, str(data[key]),
+                                 hw_font_path, placed)
         return img
-
-    # add random IDs directly on A4
 
     def _add_random_ids_on_a4(self, a4_img, doc_bbox, data):
         draw = ImageDraw.Draw(a4_img)
@@ -282,7 +278,8 @@ class DocumentGenerator:
         placed = []
         hw_font_path = random.choice(HANDWRITING_FONTS)
         for _, txt in pairs:
-            fs = self._get_optimal_font_size(draw, txt, hw_font_path,250, 120, 12, 28)
+            fs = self._get_optimal_font_size(draw, txt, hw_font_path,
+                                             250, 120, 12, 28)
             fs = int(fs * random.uniform(0.45, 0.70))
             f  = ImageFont.truetype(str(hw_font_path), fs)
             tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
@@ -291,52 +288,48 @@ class DocumentGenerator:
                 y = random.randint(50, a4_h - th - 50)
                 box = (x - 4, y - 4, x + tw + 4, y + th + 4)
                 if (box[2] < d1 or box[0] > d3 or box[3] < d2 or box[1] > d4) and \
-                   all(not (box[0] < b[2] and box[2] > b[0] and box[1] < b[3] and box[3] > b[1]) for b in placed):
+                   all(not (box[0] < b[2] and box[2] > b[0] and
+                            box[1] < b[3] and box[3] > b[1]) for b in placed):
                     placed.append(box)
                     draw.text((x, y), txt, font=f, fill=(80, 80, 80, 255))
                     break
         return a4_img
 
-    # random placement on A4
-
     def _place_doc_on_a4(self, doc_img):
         a4 = Image.new('L', (A4_W, A4_H), 255).convert('RGBA')
         a4 = self._add_printer_artifacts(a4)
 
-        # pick a random target size and then enlarge by 30%
         max_w = A4_W - 2 * MARGIN
         max_h = A4_H - 2 * MARGIN
         scale_hi = min(max_w / doc_img.width, max_h / doc_img.height, MAX_SCALE)
         scale_lo = max(MIN_SCALE, min(scale_hi * 0.5, MIN_SCALE))
         scale    = random.uniform(scale_lo, scale_hi)
-
-        # enlarge by 30 % but keep within limits
-        scale = min(scale * 1.3, max_w / doc_img.width, max_h / doc_img.height, MAX_SCALE)
+        scale    = min(scale * 1.3, max_w / doc_img.width,
+                       max_h / doc_img.height, MAX_SCALE)
 
         new_w = int(doc_img.width * scale)
         new_h = int(doc_img.height * scale)
         doc   = doc_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        # random top-left
         x0 = random.randint(MARGIN, A4_W - new_w - MARGIN)
         y0 = random.randint(MARGIN, A4_H - new_h - MARGIN)
-
         a4.paste(doc.convert('RGBA'), (x0, y0), doc)
 
         bbox = (x0, y0, x0 + new_w, y0 + new_h)
         return a4.convert('L').convert('RGB'), bbox
 
-    # main generator
-
+    # ------------------------------------------------------------------
+    # core: generate()
+    # ------------------------------------------------------------------
     def generate(self, data, output_path=None):
         img  = self.template.copy()
         draw = ImageDraw.Draw(img)
 
-        # render template fields (unchanged)
+        # -------- render template fields --------------------------------
         for field in self.spec.get('fields', []):
             name = field['name']
             if name in ('AccountID', 'HealthBenefitID') or \
-            set(name.split(',')).issuperset({'AccountID', 'HealthBenefitID'}):
+               set(name.split(',')).issuperset({'AccountID', 'HealthBenefitID'}):
                 continue
 
             x, y, w, h = field['bbox']
@@ -360,18 +353,20 @@ class DocumentGenerator:
                     processed.append((field_names[i], i, i))
                     i += 1
 
-            # -------- NEW ADDRESS HANDLING LIVES IN THIS LOOP --------
+            # -------- ADDRESS / EMAIL / DATE / TEL logic -----------------
             values = []
             for fn, _, _ in processed:
+                fn_lower = fn.lower()
+
                 if fn == 'City,State':
-                    city  = str(data.get('City',  '')).strip()
+                    city  = str(data.get('City', '')).strip()
                     state = str(data.get('State', '')).strip()
                     if city and state:
                         values.append(f"{city}, {state}")
                     elif city or state:
                         values.append(city or state)
 
-                elif fn == 'Address':                 # single‑line mailing address
+                elif fn_lower == 'address':
                     parts = [
                         data.get('Street1', '').strip(),
                         data.get('Street2', '').strip(),
@@ -383,6 +378,22 @@ class DocumentGenerator:
                     if addr_line:
                         values.append(addr_line)
 
+                elif fn_lower == 'email':
+                    name_part = ''.join(c for c in str(data.get('FullName', '')).lower() if c.isalnum())
+                    if name_part:
+                        domain = random.choice(['@gmail.com', '@yahoo.com', '@outlook.com'])
+                        values.append(f"{name_part}{domain}")
+
+                elif fn_lower == 'date':
+                    today_str = datetime.date.today().strftime('%m/%d/%Y')
+                    values.append(today_str)
+
+                elif fn_lower == 'telephonenumber':
+                    area = random.randint(200, 999)
+                    central = random.randint(200, 999)
+                    line = random.randint(0, 9999)
+                    values.append(f"{area}-{central:03d}-{line:04d}")
+
                 else:
                     v = str(data.get(fn, '')).strip()
                     if v:
@@ -391,7 +402,7 @@ class DocumentGenerator:
             if not values:
                 continue
 
-
+            # choose font size that fits
             best = 0
             for sz in range(12, 73):
                 f   = self._get_font(name, sz)
@@ -405,6 +416,7 @@ class DocumentGenerator:
                     best = sz
                 else:
                     break
+
             f = self._get_font(name, best)
             y_off = 0
             for v in values:
@@ -413,32 +425,35 @@ class DocumentGenerator:
                           fill=(0, 0, 0, 255))
                 y_off += (bb[3] - bb[1]) * 1.08
 
-        # handwritten signature
-        sig_field = next((f for f in self.spec['fields']
-                          if f['name'].lower() == 'signature'), None)
-        if sig_field and 'FullName' in data:
-            x, y, w, h = sig_field['bbox']
-            ax, ay, aw, ah = (int(x * self.spec['width']),
-                              int(y * self.spec['height']),
-                              int(w * self.spec['width']),
-                              int(h * self.spec['height']))
+        # -------- handwritten signatures (support multiple boxes) -------
+        sig_fields = [f for f in self.spec['fields']
+                      if f['name'].strip().lower() == 'signature']
+        if 'FullName' in data and sig_fields:
             text = data['FullName']
-            low, high, best = 6, min(72, ah), 6
-            while low <= high:
-                mid = (low + high) // 2
-                try:
-                    f = ImageFont.truetype(str(SIGNATURE_FONT), mid)
-                    if draw.textlength(text, font=f) <= aw * .9:
-                        best, low = mid, mid + 1
-                    else:
+            for sig_field in sig_fields:
+                x, y, w, h = sig_field['bbox']
+                ax, ay, aw, ah = (
+                    int(x * self.spec['width']),
+                    int(y * self.spec['height']),
+                    int(w * self.spec['width']),
+                    int(h * self.spec['height'])
+                )
+                low, high, best = 6, min(72, ah), 6
+                while low <= high:
+                    mid = (low + high) // 2
+                    try:
+                        f = ImageFont.truetype(str(SIGNATURE_FONT), mid)
+                        if draw.textlength(text, font=f) <= aw * .9:
+                            best, low = mid, mid + 1
+                        else:
+                            high = mid - 1
+                    except Exception:
                         high = mid - 1
-                except Exception:
-                    high = mid - 1
-            f = ImageFont.truetype(str(SIGNATURE_FONT), best)
-            draw.text((ax + 5, ay + 2), text, font=f,
-                      fill=(0, 0, 0, 255))
+                f = ImageFont.truetype(str(SIGNATURE_FONT), best)
+                draw.text((ax + 5, ay + 2), text, font=f,
+                          fill=(0, 0, 0, 255))
 
-        # IDs & final placement
+        # -------- IDs & final placement --------------------------------
         has_ids = any(set(f['name'].split(',')).issuperset({'AccountID', 'HealthBenefitID'})
                       or f['name'] in ('AccountID', 'HealthBenefitID')
                       for f in self.spec.get('fields', []))
@@ -460,13 +475,11 @@ class DocumentGenerator:
             final.save(output_path, 'PNG', quality=95, dpi=(300, 300))
         return final
 
-# batch / parallel helpers
-def _make_output_stem(stem: str, quality: str) -> str:
-    """Return the base filename stem adjusted for quality.
 
-    If quality == 'unclear' we replace any trailing '_clean' with
-    '_unclean'. Otherwise we leave the stem untouched.
-    """
+# --------------------------------------------------------------------
+# batch / parallel helpers
+# --------------------------------------------------------------------
+def _make_output_stem(stem: str, quality: str) -> str:
     if quality == 'unclear':
         return stem[:-6] + '_unclean' if stem.endswith('_clean') else f"{stem}_unclean"
     return stem
@@ -493,13 +506,15 @@ def generate_batch(generator, rows, out_dir, count=None):
     count = min(count, len(rows)) if count else len(rows)
     files = []
     for i in range(count):
-        out = Path(out_dir) / f"{_make_output_stem(generator.template_stem, generator.quality)}{i + 1 if count>1 else ''}.png"
+        out = Path(out_dir) / f"{_make_output_stem(generator.template_stem, generator.quality)}{i + 1 if count > 1 else ''}.png"
         generator.generate(rows[i], output_path=out)
         files.append(str(out))
     return files
 
-# CLI
 
+# --------------------------------------------------------------------
+# command‑line interface
+# --------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser(description='Generate documents')
     p.add_argument('doc_type')
@@ -566,6 +581,7 @@ def main():
             imgs[0].save(pdf, 'PDF', resolution=300,
                          save_all=True, append_images=imgs[1:])
             print('→', pdf)
+
 
 if __name__ == '__main__':
     main()
