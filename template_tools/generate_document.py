@@ -4,11 +4,16 @@ import os
 import io
 import random
 import argparse
-import datetime                                    
+import datetime
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+
+# imports for page‑swap PDF handling
+import re                           
+import fitz                         
+from io import BytesIO              
 
 FONTS_DIR      = Path(__file__).parent.parent / 'fonts'
 DEFAULT_FONT   = FONTS_DIR / 'OpenSans_SemiCondensed-Regular.ttf'
@@ -27,7 +32,7 @@ DOCUMENT_SUBTYPES = {
     'empletter': ['empletter1_empletter'],
     'taxreturn': ['w4_taxreturn'],
     'i766':      ['form_i766'],
-    'authrep': ['form_authrep']
+    'authrep':   ['form_authrep']
 }
 
 # A4 background
@@ -35,6 +40,7 @@ A4_W, A4_H  = 2480, 3508
 MARGIN      = 50
 MIN_SCALE   = 0.55
 MAX_SCALE   = 0.90
+
 
 class DocumentGenerator:
     def __init__(self, template_path, spec_path, font_path=None,
@@ -46,6 +52,21 @@ class DocumentGenerator:
         self.template_stem = Path(template_path).stem
         self.quality    = quality.lower() if quality.lower() in ('clear', 'unclear') else 'unclear'
         self.font_cache = {}
+
+        # detect cleaned templates that contain _page<N>_ 
+        self.original_pdf_path = None        # untouched multi‑page PDF
+        self.replacement_index = None        # 0‑based page to overwrite
+
+        m = re.search(r'_page(\d+)_', self.template_stem)
+        if m:
+            self.replacement_index = int(m.group(1)) - 1           # page1 → 0
+            # strip "_page<N>_"  and trailing  "_clean"
+            core_name = self.template_stem.replace(f"_page{m.group(1)}", "")
+            if core_name.endswith("_clean"):
+                core_name = core_name[:-6]
+            pdf_candidate = Path(template_path).with_name(f"{core_name}.pdf").with_suffix(".pdf")
+            if pdf_candidate.exists():
+                self.original_pdf_path = pdf_candidate
 
     def _load_spec(self, p):
         with open(p) as f:
@@ -310,6 +331,38 @@ class DocumentGenerator:
         bbox = (x0, y0, x0 + new_w, y0 + new_h)
         return a4.convert('L').convert('RGB'), bbox
 
+    # helper that merges generated page back into original PDF
+    def _combine_with_original_pdf(self, generated_img, output_png_path):
+        """
+        If this cleaned template came from a multi‑page original PDF (detected
+        via _page<N>_ in the filename), replace that page and save a combined
+        PDF next to the PNG.
+        """
+        if self.original_pdf_path is None or self.replacement_index is None:
+            return None
+
+        # Convert generated page to PDF (in‑memory)
+        buf = BytesIO()
+        generated_img.save(buf, format='PDF', resolution=300)
+        buf.seek(0)
+        new_page_doc = fitz.open("pdf", buf.read())
+
+        # Swap page in original
+        doc = fitz.open(str(self.original_pdf_path))
+        if self.replacement_index < len(doc):
+            doc.delete_page(self.replacement_index)
+        doc.insert_pdf(new_page_doc, start_at=self.replacement_index)
+
+        # Reset page labels to default 1-2-3-4... sequence
+        labels = [{"startpage": 0, "style": "D", "prefix": ""}]
+        doc.set_page_labels(labels)
+
+        combined_path = Path(output_png_path).with_suffix('.pdf')
+        doc.save(str(combined_path))
+        doc.close()
+        return combined_path
+
+
     def generate(self, data, output_path=None):
         img  = self.template.copy()
         draw = ImageDraw.Draw(img)
@@ -454,6 +507,7 @@ class DocumentGenerator:
                 img = self._add_noise_effects(img)
             if output_path:
                 img.convert('RGB').save(output_path, 'PNG', quality=95, dpi=(300, 300))
+                self._combine_with_original_pdf(img, output_path)
             return img
 
         final, bbox = self._place_doc_on_a4(img)
@@ -462,6 +516,7 @@ class DocumentGenerator:
             final = self._add_noise_effects(final)
         if output_path:
             final.save(output_path, 'PNG', quality=95, dpi=(300, 300))
+            self._combine_with_original_pdf(final, output_path)
         return final
 
 
