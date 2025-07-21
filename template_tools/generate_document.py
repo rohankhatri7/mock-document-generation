@@ -10,10 +10,9 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
-# imports for page‑swap PDF handling
-import re                           
-import fitz                         
-from io import BytesIO              
+import re
+import fitz
+from io import BytesIO
 
 FONTS_DIR      = Path(__file__).parent.parent / 'fonts'
 DEFAULT_FONT   = FONTS_DIR / 'OpenSans_SemiCondensed-Regular.ttf'
@@ -35,7 +34,6 @@ DOCUMENT_SUBTYPES = {
     'authrep':   ['form_authrep']
 }
 
-# A4 background
 A4_W, A4_H  = 2480, 3508
 MARGIN      = 50
 MIN_SCALE   = 0.55
@@ -52,15 +50,11 @@ class DocumentGenerator:
         self.template_stem = Path(template_path).stem
         self.quality    = quality.lower() if quality.lower() in ('clear', 'unclear') else 'unclear'
         self.font_cache = {}
-
-        # detect cleaned templates that contain _page<N>_ 
-        self.original_pdf_path = None        # untouched multi‑page PDF
-        self.replacement_index = None        # 0‑based page to overwrite
-
+        self.original_pdf_path = None
+        self.replacement_index = None
         m = re.search(r'_page(\d+)_', self.template_stem)
         if m:
-            self.replacement_index = int(m.group(1)) - 1           # page1 → 0
-            # strip "_page<N>_"  and trailing  "_clean"
+            self.replacement_index = int(m.group(1)) - 1
             core_name = self.template_stem.replace(f"_page{m.group(1)}", "")
             if core_name.endswith("_clean"):
                 core_name = core_name[:-6]
@@ -82,38 +76,29 @@ class DocumentGenerator:
                 self.font_cache[ck] = ImageFont.load_default()
         return self.font_cache[ck]
 
-    # noise / artefact helpers
-    def _add_noise_effects(self, img):
+    def _add_noise_effects(self, img, blend=1.0):
         if self.quality != 'unclear':
             return img.convert('RGBA')
-
-        img   = img.convert('RGBA')
-        orig  = img.size
+        base = img.convert('RGBA')
+        img  = img.convert('RGBA')
+        orig = img.size
         small = (max(20, int(orig[0] * random.uniform(.3, .5))),
                  max(20, int(orig[1] * random.uniform(.3, .5))))
-        img   = img.resize(small, Image.Resampling.LANCZOS)
+        img = img.resize(small, Image.Resampling.LANCZOS)
         large = (int(small[0] * random.uniform(2, 3)),
                  int(small[1] * random.uniform(2, 3)))
-        img   = img.resize(large, Image.Resampling.NEAREST)
-        img   = img.rotate(random.uniform(-2, 2), Image.BICUBIC, expand=True, fillcolor='white')
-        img   = img.resize(orig, Image.Resampling.BILINEAR)
-
-        if random.random() > .3:
-            buf = io.BytesIO()
-            img.convert('RGB').save(buf, 'JPEG', quality=random.randint(30, 60))
-            img = Image.open(buf).convert('RGBA')
-
-        if random.random() > .3:
-            noise = np.random.randint(0, 30, (img.size[1], img.size[0], 3), dtype=np.uint8)
-            img   = Image.blend(img, Image.fromarray(noise).convert('RGBA'), .05)
-
-        if random.random() > .3:
-            img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(1.2, 3)))
-
+        img = img.resize(large, Image.Resampling.NEAREST)
+        img = img.rotate(random.uniform(-2, 2), Image.BICUBIC, expand=True, fillcolor='white')
+        img = img.resize(orig, Image.Resampling.BILINEAR)
+        buf = io.BytesIO()
+        img.convert('RGB').save(buf, 'JPEG', quality=random.randint(20, 40))
+        img = Image.open(buf).convert('RGBA')
+        noise = np.random.randint(0, 30, (img.size[1], img.size[0], 3), dtype=np.uint8)
+        img   = Image.blend(img, Image.fromarray(noise).convert('RGBA'), .05)
+        img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(2.5, 3.0)))
         if random.random() > .6:
-            img  = ImageEnhance.Brightness(img).enhance(random.uniform(.95, 1.05))
-            img  = ImageEnhance.Contrast(img).enhance(random.uniform(.97, 1.03))
-
+            img = ImageEnhance.Brightness(img).enhance(random.uniform(.95, 1.05))
+            img = ImageEnhance.Contrast(img).enhance(random.uniform(.97, 1.03))
         if random.random() > .2:
             L = np.array(img.convert('L'))
             g = np.random.normal(0, random.uniform(.5, 1.5), L.shape)
@@ -122,37 +107,32 @@ class DocumentGenerator:
                 Image.fromarray(np.clip(L + g, 0, 255).astype('uint8'), 'L'),
                 .2
             )
-
-        return img.convert('RGBA')
+        img = img.convert('RGBA')
+        if blend < 1.0:
+            img = Image.blend(base, img, blend)
+        return img
 
     def _fast_printer_artifacts(self, size, intensity=.02):
         w, h = size
         m = np.zeros((h, w), np.uint8)
-
-        # dots
         n = int(w * h * intensity * 1.08 / 100)
         m[np.random.randint(0, h, n), np.random.randint(0, w, n)] = np.random.randint(120, 200, n)
-
-        # vertical streaks
-        for _ in range(random.randint(1, 5)):
-            sw  = np.random.randint(1, 3)
-            x0  = np.random.randint(0, w - sw + 1)
+        for _ in range(random.randint(3, 9)):
+            sw = np.random.randint(1, 3)
+            x0 = np.random.randint(0, w - sw + 1)
             m[:, x0:x0 + sw] = np.where(
                 np.random.rand(h, sw) < .7,
                 np.random.randint(20, 80, (h, sw)),
                 m[:, x0:x0 + sw]
             )
-
-        # horizontal streak
-        if random.random() < .3:
-            sh  = np.random.randint(1, 3)
-            y0  = np.random.randint(0, h - sh + 1)
+        if random.random() < .6:
+            sh = np.random.randint(1, 3)
+            y0 = np.random.randint(0, h - sh + 1)
             m[y0:y0 + sh, :] = np.where(
                 np.random.rand(sh, w) < .6,
                 np.random.randint(15, 60, (sh, w)),
                 m[y0:y0 + sh, :]
             )
-
         alpha = (m > 0).astype(np.uint8) * 255
         return Image.fromarray(np.dstack([m] * 3 + [alpha]), 'RGBA')
 
@@ -163,7 +143,6 @@ class DocumentGenerator:
         noise = Image.merge('RGBA', (noise, noise, noise, Image.new('L', base.size, 10)))
         return Image.alpha_composite(Image.alpha_composite(base, arte), noise)
 
-    # font sizing & placement helpers
     def _get_optimal_font_size(self, draw, text, font_path,
                                max_w, max_h, min_s=6, max_s=100):
         if not text or not font_path.exists():
@@ -206,7 +185,6 @@ class DocumentGenerator:
             fs = max(6, int(fs * 0.9))
             f  = ImageFont.truetype(str(hw_font_path), fs)
             tw, th = draw.textbbox((0, 0), txt, font=f)[2:]
-
         x, y = self._find_random_position(bx, by, bw, bh, tw, th, placed)
         if x is None:
             fs = max(6, int(fs * 0.8))
@@ -227,12 +205,11 @@ class DocumentGenerator:
                 (bx,      by, mid - bx, bh),
                 (mid,     by, bx + bw - mid, bh)
             )
-        else:
-            mid = by + bh // 2
-            return (
-                (bx, by, bw, mid - by),
-                (bx, mid, bw, by + bh - mid)
-            )
+        mid = by + bh // 2
+        return (
+            (bx, by, bw, mid - by),
+            (bx, mid, bw, by + bh - mid)
+        )
 
     def _add_handwritten_annotations(self, img, data):
         draw = ImageDraw.Draw(img)
@@ -241,10 +218,7 @@ class DocumentGenerator:
         account_areas  = [f for f in self.spec.get('fields', []) if f['name'] == 'AccountID']
         health_areas   = [f for f in self.spec.get('fields', []) if f['name'] == 'HealthBenefitID']
         hw_font_path   = random.choice(HANDWRITING_FONTS)
-
         placed = []
-
-        # combined label
         if combined_areas and ('AccountID' in data or 'HealthBenefitID' in data):
             area = combined_areas[0]
             bx, by, bw, bh = area['bbox']
@@ -260,8 +234,6 @@ class DocumentGenerator:
                     self._draw_id_in_box(draw, sub_box, str(data[key]),
                                          hw_font_path, placed)
             return img
-
-        # separate boxes
         field_map = (
             ('AccountID', account_areas),
             ('HealthBenefitID', health_areas)
@@ -311,7 +283,6 @@ class DocumentGenerator:
     def _place_doc_on_a4(self, doc_img):
         a4 = Image.new('L', (A4_W, A4_H), 255).convert('RGBA')
         a4 = self._add_printer_artifacts(a4)
-
         max_w = A4_W - 2 * MARGIN
         max_h = A4_H - 2 * MARGIN
         scale_hi = min(max_w / doc_img.width, max_h / doc_img.height, MAX_SCALE)
@@ -319,61 +290,41 @@ class DocumentGenerator:
         scale    = random.uniform(scale_lo, scale_hi)
         scale    = min(scale * 1.3, max_w / doc_img.width,
                        max_h / doc_img.height, MAX_SCALE)
-
         new_w = int(doc_img.width * scale)
         new_h = int(doc_img.height * scale)
         doc   = doc_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
         x0 = random.randint(MARGIN, A4_W - new_w - MARGIN)
         y0 = random.randint(MARGIN, A4_H - new_h - MARGIN)
         a4.paste(doc.convert('RGBA'), (x0, y0), doc)
-
         bbox = (x0, y0, x0 + new_w, y0 + new_h)
         return a4.convert('L').convert('RGB'), bbox
 
-    # helper that merges generated page back into original PDF
     def _combine_with_original_pdf(self, generated_img, output_png_path):
-        """
-        If this cleaned template came from a multi‑page original PDF (detected
-        via _page<N>_ in the filename), replace that page and save a combined
-        PDF next to the PNG.
-        """
         if self.original_pdf_path is None or self.replacement_index is None:
             return None
-
-        # Convert generated page to PDF (in‑memory)
         buf = BytesIO()
         generated_img.save(buf, format='PDF', resolution=300)
         buf.seek(0)
         new_page_doc = fitz.open("pdf", buf.read())
-
-        # Swap page in original
         doc = fitz.open(str(self.original_pdf_path))
         if self.replacement_index < len(doc):
             doc.delete_page(self.replacement_index)
         doc.insert_pdf(new_page_doc, start_at=self.replacement_index)
-
-        # Reset page labels to default 1-2-3-4... sequence
         labels = [{"startpage": 0, "style": "D", "prefix": ""}]
         doc.set_page_labels(labels)
-
         combined_path = Path(output_png_path).with_suffix('.pdf')
         doc.save(str(combined_path))
         doc.close()
         return combined_path
 
-
     def generate(self, data, output_path=None):
         img  = self.template.copy()
         draw = ImageDraw.Draw(img)
-
-        # render template fields
         for field in self.spec.get('fields', []):
             name = field['name']
             if name in ('AccountID', 'HealthBenefitID') or \
                set(name.split(',')).issuperset({'AccountID', 'HealthBenefitID'}):
                 continue
-
             x, y, w, h = field['bbox']
             if w <= 0 or h <= 0:
                 continue
@@ -381,8 +332,6 @@ class DocumentGenerator:
             abs_y = int(y * self.spec['height'])
             abs_w = int(w * self.spec['width'])
             abs_h = int(h * self.spec['height'])
-
-            # split any comma‑separated label names
             field_names = [n.strip() for n in name.split(',')]
             processed = []
             i = 0
@@ -394,12 +343,9 @@ class DocumentGenerator:
                 else:
                     processed.append((field_names[i], i, i))
                     i += 1
-
-            # ADDRESS / EMAIL / DATE / TEL logic
             values = []
             for fn, _, _ in processed:
                 fn_lower = fn.lower()
-
                 if fn == 'City,State':
                     city  = str(data.get('City', '')).strip()
                     state = str(data.get('State', '')).strip()
@@ -407,7 +353,6 @@ class DocumentGenerator:
                         values.append(f"{city}, {state}")
                     elif city or state:
                         values.append(city or state)
-
                 elif fn_lower == 'address':
                     parts = [
                         data.get('Street1', '').strip(),
@@ -419,32 +364,25 @@ class DocumentGenerator:
                     addr_line = " ".join([p for p in parts if p])
                     if addr_line:
                         values.append(addr_line)
-
                 elif fn_lower == 'email':
                     name_part = ''.join(c for c in str(data.get('FullName', '')).lower() if c.isalnum())
                     if name_part:
                         domain = random.choice(['@gmail.com', '@yahoo.com', '@outlook.com'])
                         values.append(f"{name_part}{domain}")
-
                 elif fn_lower == 'date':
                     today_str = datetime.date.today().strftime('%m/%d/%Y')
                     values.append(today_str)
-
                 elif fn_lower == 'telephonenumber':
                     area = random.randint(200, 999)
                     central = random.randint(200, 999)
                     line = random.randint(0, 9999)
                     values.append(f"{area}-{central:03d}-{line:04d}")
-
                 else:
                     v = str(data.get(fn, '')).strip()
                     if v:
                         values.append(v)
-
             if not values:
                 continue
-
-            # choose font size that fits
             best = 0
             for sz in range(12, 73):
                 f   = self._get_font(name, sz)
@@ -458,7 +396,6 @@ class DocumentGenerator:
                     best = sz
                 else:
                     break
-
             f = self._get_font(name, best)
             y_off = 0
             for v in values:
@@ -466,8 +403,6 @@ class DocumentGenerator:
                 draw.text((abs_x + 2, abs_y + y_off), v, font=f,
                           fill=(0, 0, 0, 255))
                 y_off += (bb[3] - bb[1]) * 1.08
-
-        # handwritten signatures (support multiple boxes)
         sig_fields = [f for f in self.spec['fields']
                       if f['name'].strip().lower() == 'signature']
         if 'FullName' in data and sig_fields:
@@ -494,14 +429,12 @@ class DocumentGenerator:
                 f = ImageFont.truetype(str(SIGNATURE_FONT), best)
                 draw.text((ax + 5, ay + 2), text, font=f,
                           fill=(0, 0, 0, 255))
-
-        # IDs & final placement
         has_ids = any(set(f['name'].split(',')).issuperset({'AccountID', 'HealthBenefitID'})
                       or f['name'] in ('AccountID', 'HealthBenefitID')
                       for f in self.spec.get('fields', []))
-
         if has_ids:
-            img = self._add_printer_artifacts(img)
+            intensity = .07 if self.quality == 'unclear' else .02
+            img = self._add_printer_artifacts(img, intensity=intensity)
             img = self._add_handwritten_annotations(img, data)
             if self.quality == 'unclear':
                 img = self._add_noise_effects(img)
@@ -509,7 +442,11 @@ class DocumentGenerator:
                 img.convert('RGB').save(output_path, 'PNG', quality=95, dpi=(300, 300))
                 self._combine_with_original_pdf(img, output_path)
             return img
-
+        if self.quality == 'unclear':
+            img = self._add_printer_artifacts(img, intensity=.03)
+            img = self._add_noise_effects(img, blend=0.4)
+        else:
+            img = self._add_printer_artifacts(img, intensity=.02)
         final, bbox = self._place_doc_on_a4(img)
         final       = self._add_random_ids_on_a4(final, bbox, data)
         if self.quality == 'unclear':
@@ -520,7 +457,6 @@ class DocumentGenerator:
         return final
 
 
-# batch / parallel helpers
 def _make_output_stem(stem: str, quality: str) -> str:
     if quality == 'unclear':
         return stem[:-6] + '_unclean' if stem.endswith('_clean') else f"{stem}_unclean"
@@ -565,15 +501,11 @@ def main():
     p.add_argument('--count', type=int)
     p.add_argument('--pdf', choices=['single', 'multi'])
     p.add_argument('--quality', choices=['clear', 'unclear'], default='unclear')
-    p.add_argument('--workers', type=int,
-                   help='Parallel workers (default serial)')
+    p.add_argument('--workers', type=int)
     args = p.parse_args()
-
     base    = Path(__file__).parent
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    # subtype resolution
     if '_' in args.doc_type:
         subtype = args.doc_type
     else:
@@ -583,13 +515,11 @@ def main():
             return
         subtype = args.subtype if args.subtype else (
             cand[0] if args.no_random else random.choice(cand))
-
     tpl  = base / 'output/clean_templates' / f'{subtype}_clean.png'
     spec = base / 'output/clean_templates' / f'{subtype}_spec.json'
     if not tpl.exists() or not spec.exists():
         print('Run clean_template first')
         return
-
     rows = list(csv.DictReader(open(args.data)))
     if not rows:
         print('No CSV rows')
@@ -597,15 +527,12 @@ def main():
     if args.row is not None:
         rows = [rows[args.row]]
     count = min(args.count, len(rows)) if args.count else len(rows)
-
     gen   = DocumentGenerator(tpl, spec, None, 12, args.quality)
     paths = generate_batch_parallel(gen, tpl, spec, args.quality,
                                     rows, out_dir, count, args.workers)
-
     print('\nGenerated documents:')
     for i, pth in enumerate(paths, 1):
         print(f'  {i}. {pth}')
-
     if args.pdf:
         pdf_dir = base / 'output/pdfs'
         pdf_dir.mkdir(parents=True, exist_ok=True)
