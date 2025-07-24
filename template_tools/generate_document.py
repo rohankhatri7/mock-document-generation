@@ -491,14 +491,82 @@ def generate_batch(generator, rows, out_dir, count=None):
 
 def generate_random_multi(num_pages, rows, base_dir, quality='unclear'):
     clean_dir = base_dir / 'output' / 'clean_templates'
-    pdf_dir   = base_dir / 'output' / 'pdfs'
+    pdf_dir = base_dir / 'output' / 'pdfs'
     pdf_dir.mkdir(parents=True, exist_ok=True)
     
     pages = []
     document_pages = []
+    page_num = 1
     
-    for page_num in range(1, num_pages + 1):
+    while page_num <= num_pages:
+        # Randomly select document type
         doc_type = random.choice(list(DOCUMENT_SUBTYPES.keys()))
+        
+        # Special handling for tax return (4 pages)
+        if doc_type == 'taxreturn' and (num_pages - page_num + 1) >= 4:
+            # First, generate the first page to get its dimensions
+            subtype = 'fw4_page1_taxreturn'
+            tpl = clean_dir / f'{subtype}_clean.png'
+            spec = clean_dir / f'{subtype}_spec.json'
+            
+            if not tpl.exists() or not spec.exists():
+                raise FileNotFoundError(f"Missing template/spec for {subtype}")
+                
+            data_row = random.choice(rows)
+            gen = DocumentGenerator(tpl, spec, None, 12, quality)
+            first_page_img = gen.generate(data_row).convert('RGB')
+            
+            # Get the dimensions of the first page
+            target_width, target_height = first_page_img.size
+            
+            # Add the first page
+            pages.append(first_page_img)
+            document_pages.append({
+                'page_number': page_num,
+                'document_type': doc_type,
+                'subtype': 'fw4_page1_taxreturn'
+            })
+            page_num += 1
+            
+            # Create a temporary generator for applying noise to pages 2-4 if quality is 'unclear'
+            temp_gen = DocumentGenerator(tpl, spec, None, 12, quality) if quality == 'unclear' else None
+            
+            # Process the remaining 3 pages from the PDF
+            with fitz.open(base_dir / 'templates' / 'taxreturn' / 'fw4_taxreturn.pdf') as doc:
+                # Skip the first page (we already handled it)
+                for i in range(1, min(4, len(doc))):
+                    if page_num > num_pages:
+                        break
+                        
+                    # Convert PDF page to image
+                    page = doc.load_page(i)
+                    pix = page.get_pixmap()
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    
+                    # Resize to match the first page dimensions
+                    img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+                    
+                    # Apply noise effects if quality is 'unclear'
+                    if quality == 'unclear' and temp_gen is not None:
+                        # Convert to RGBA for noise effects
+                        img_rgba = img.convert('RGBA')
+                        # Apply noise effects
+                        img_with_noise = temp_gen._add_noise_effects(img_rgba)
+                        # Convert back to RGB for consistency
+                        img = img_with_noise.convert('RGB')
+                    
+                    pages.append(img)
+                    document_pages.append({
+                        'page_number': page_num,
+                        'document_type': doc_type,
+                        'subtype': f'fw4_page{i+1}_taxreturn'
+                    })
+                    page_num += 1
+            
+            # Skip the rest of this iteration since we've already added pages
+            continue
+        
+        # Normal document processing for non-taxreturn or when we can't fit a full tax return
         subtype = random.choice(DOCUMENT_SUBTYPES[doc_type])
         tpl = clean_dir / f'{subtype}_clean.png'
         spec = clean_dir / f'{subtype}_spec.json'
@@ -512,7 +580,7 @@ def generate_random_multi(num_pages, rows, base_dir, quality='unclear'):
         # Generate the document
         img = gen.generate(data_row)
         
-        # Record simplified page info
+        # Record page info
         document_pages.append({
             'page_number': page_num,
             'document_type': doc_type,
@@ -533,6 +601,7 @@ def generate_random_multi(num_pages, rows, base_dir, quality='unclear'):
         
         img = img.convert('RGB')
         pages.append(img)
+        page_num += 1
     
     # Generate output filename with counter
     clean_status = 'clean' if quality == 'clear' else 'unclean'
@@ -613,7 +682,6 @@ def main():
         ground_truth_path = base / 'output' / 'pdfs' / 'batch_ground_truth.json'
         with open(ground_truth_path, 'w') as f:
             json.dump(batch_ground_truth, f, indent=2)
-        print(f'\nGround truth saved to: {ground_truth_path}')
         return
     if '_' in (args.doc_type or ''):
         subtype = args.doc_type
