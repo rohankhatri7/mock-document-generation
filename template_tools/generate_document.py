@@ -494,13 +494,13 @@ def generate_random_multi(num_pages, rows, base_dir, quality='unclear'):
     pdf_dir   = base_dir / 'output' / 'pdfs'
     pdf_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create a list to store either image objects or PDF paths
     pages = []
+    document_pages = []
     
-    for _ in range(num_pages):
+    for page_num in range(1, num_pages + 1):
         doc_type = random.choice(list(DOCUMENT_SUBTYPES.keys()))
-        subtype  = random.choice(DOCUMENT_SUBTYPES[doc_type])
-        tpl  = clean_dir / f'{subtype}_clean.png'
+        subtype = random.choice(DOCUMENT_SUBTYPES[doc_type])
+        tpl = clean_dir / f'{subtype}_clean.png'
         spec = clean_dir / f'{subtype}_spec.json'
         
         if not tpl.exists() or not spec.exists():
@@ -509,35 +509,37 @@ def generate_random_multi(num_pages, rows, base_dir, quality='unclear'):
         data_row = random.choice(rows)
         gen = DocumentGenerator(tpl, spec, None, 12, quality)
         
-        # Generate the document - this will handle A4 placement for most documents
+        # Generate the document
         img = gen.generate(data_row)
+        
+        # Record simplified page info
+        document_pages.append({
+            'page_number': page_num,
+            'document_type': doc_type,
+            'subtype': subtype
+        })
         
         # Special handling for authrep template to make it larger
         if 'authrep' in subtype.lower():
-            # Create a new image with A4 dimensions
             a4_img = Image.new('RGB', (A4_W, A4_H), 'white')
-            # Calculate scale factor to make authrep larger (e.g., 80% of page width)
             scale = min((A4_W * 0.8) / img.width, (A4_H * 0.8) / img.height)
             new_width = int(img.width * scale)
             new_height = int(img.height * scale)
-            # Resize the authrep image
             resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            # Calculate position to center the resized authrep
             x = (A4_W - new_width) // 2
             y = (A4_H - new_height) // 2
-            # Paste the resized authrep onto the A4 page
             a4_img.paste(resized_img, (x, y))
             img = a4_img
         
-        # Convert to RGB if not already
         img = img.convert('RGB')
         pages.append(img)
     
-    # Generate output filename with counter instead of timestamp
+    # Generate output filename with counter
     clean_status = 'clean' if quality == 'clear' else 'unclean'
     counter = 1
     while True:
-        out_pdf_path = pdf_dir / f'random_multi_{clean_status}_{counter}.pdf'
+        base_name = f'random_multi_{clean_status}_{counter}'
+        out_pdf_path = pdf_dir / f'{base_name}.pdf'
         if not out_pdf_path.exists():
             break
         counter += 1
@@ -553,7 +555,7 @@ def generate_random_multi(num_pages, rows, base_dir, quality='unclear'):
             quality=100
         )
     
-    return out_pdf_path
+    return out_pdf_path, document_pages
 
 
 def main():
@@ -586,13 +588,32 @@ def main():
         # If count is not specified, default to 1
         count = args.count if args.count is not None else 1
         
+        # Prepare batch ground truth - simplified format
+        batch_ground_truth = []
+        
         # Generate the specified number of multi-page documents
         for i in range(count):
-            pdf_path = generate_random_multi(args.multcount,
-                                           rows,
-                                           base,
-                                           quality=args.quality)
-            print(f'→ {i+1}/{count}:', pdf_path)
+            pdf_path, document_pages = generate_random_multi(args.multcount,
+                                                          rows,
+                                                          base,
+                                                          quality=args.quality)
+            
+            # Add simplified document info (just document number and page types)
+            doc_info = {
+                'document_number': i + 1,
+                'pages': [{'page_number': p['page_number'], 
+                          'document_type': p['document_type']} 
+                         for p in document_pages]
+            }
+            batch_ground_truth.append(doc_info)
+            
+            print(f'→ {i+1}/{count}: {pdf_path}')
+        
+        # Save batch ground truth
+        ground_truth_path = base / 'output' / 'pdfs' / 'batch_ground_truth.json'
+        with open(ground_truth_path, 'w') as f:
+            json.dump(batch_ground_truth, f, indent=2)
+        print(f'\nGround truth saved to: {ground_truth_path}')
         return
     if '_' in (args.doc_type or ''):
         subtype = args.doc_type
