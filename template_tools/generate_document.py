@@ -29,7 +29,7 @@ DOCUMENT_SUBTYPES = {
     'paystub':   ['adp_paystub', 'paychex_paystub'],
     'ssn':       ['ssn1_ssn'],
     'empletter': ['empletter1_empletter'],
-    'taxreturn': ['w4_taxreturn'],
+    'taxreturn': ['fw4_page1_taxreturn'],
     'i766':      ['form_i766'],
     'authrep':   ['form_authrep']
 }
@@ -489,10 +489,76 @@ def generate_batch(generator, rows, out_dir, count=None):
         files.append(str(out))
     return files
 
+def generate_random_multi(num_pages, rows, base_dir, quality='unclear'):
+    clean_dir = base_dir / 'output' / 'clean_templates'
+    pdf_dir   = base_dir / 'output' / 'pdfs'
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create a list to store either image objects or PDF paths
+    pages = []
+    
+    for _ in range(num_pages):
+        doc_type = random.choice(list(DOCUMENT_SUBTYPES.keys()))
+        subtype  = random.choice(DOCUMENT_SUBTYPES[doc_type])
+        tpl  = clean_dir / f'{subtype}_clean.png'
+        spec = clean_dir / f'{subtype}_spec.json'
+        
+        if not tpl.exists() or not spec.exists():
+            raise FileNotFoundError(f"Missing template/spec for {subtype}")
+            
+        data_row = random.choice(rows)
+        gen = DocumentGenerator(tpl, spec, None, 12, quality)
+        
+        # Generate the document - this will handle A4 placement for most documents
+        img = gen.generate(data_row)
+        
+        # Special handling for authrep template to make it larger
+        if 'authrep' in subtype.lower():
+            # Create a new image with A4 dimensions
+            a4_img = Image.new('RGB', (A4_W, A4_H), 'white')
+            # Calculate scale factor to make authrep larger (e.g., 80% of page width)
+            scale = min((A4_W * 0.8) / img.width, (A4_H * 0.8) / img.height)
+            new_width = int(img.width * scale)
+            new_height = int(img.height * scale)
+            # Resize the authrep image
+            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            # Calculate position to center the resized authrep
+            x = (A4_W - new_width) // 2
+            y = (A4_H - new_height) // 2
+            # Paste the resized authrep onto the A4 page
+            a4_img.paste(resized_img, (x, y))
+            img = a4_img
+        
+        # Convert to RGB if not already
+        img = img.convert('RGB')
+        pages.append(img)
+    
+    # Generate output filename with counter instead of timestamp
+    clean_status = 'clean' if quality == 'clear' else 'unclean'
+    counter = 1
+    while True:
+        out_pdf_path = pdf_dir / f'random_multi_{clean_status}_{counter}.pdf'
+        if not out_pdf_path.exists():
+            break
+        counter += 1
+    
+    # Save all pages to a single PDF
+    if pages:
+        pages[0].save(
+            out_pdf_path,
+            'PDF',
+            resolution=300,
+            save_all=True,
+            append_images=pages[1:] if len(pages) > 1 else [],
+            quality=100
+        )
+    
+    return out_pdf_path
+
 
 def main():
     p = argparse.ArgumentParser(description='Generate documents')
-    p.add_argument('doc_type')
+    p.add_argument('doc_type', nargs='?', help='Single doc type run (ignored when --multi)')
     p.add_argument('--subtype')
     p.add_argument('--no-random', action='store_true')
     p.add_argument('--data', default='data/sample_data.csv')
@@ -502,14 +568,36 @@ def main():
     p.add_argument('--pdf', choices=['single', 'multi'])
     p.add_argument('--quality', choices=['clear', 'unclear'], default='unclear')
     p.add_argument('--workers', type=int)
+    p.add_argument('--multi', action='store_true')
+    p.add_argument('--multcount', type=int, default=0)
     args = p.parse_args()
     base    = Path(__file__).parent
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if '_' in args.doc_type:
+    rows = list(csv.DictReader(open(args.data)))
+    if not rows:
+        print('No CSV rows')
+        return
+    if args.multi:
+        if args.multcount <= 0:
+            print('Specify --multcount > 0 when using --multi')
+            return
+        
+        # If count is not specified, default to 1
+        count = args.count if args.count is not None else 1
+        
+        # Generate the specified number of multi-page documents
+        for i in range(count):
+            pdf_path = generate_random_multi(args.multcount,
+                                           rows,
+                                           base,
+                                           quality=args.quality)
+            print(f'→ {i+1}/{count}:', pdf_path)
+        return
+    if '_' in (args.doc_type or ''):
         subtype = args.doc_type
     else:
-        cand = DOCUMENT_SUBTYPES.get(args.doc_type.lower())
+        cand = DOCUMENT_SUBTYPES.get((args.doc_type or '').lower())
         if not cand:
             print('Unknown doc_type')
             return
@@ -519,10 +607,6 @@ def main():
     spec = base / 'output/clean_templates' / f'{subtype}_spec.json'
     if not tpl.exists() or not spec.exists():
         print('Run clean_template first')
-        return
-    rows = list(csv.DictReader(open(args.data)))
-    if not rows:
-        print('No CSV rows')
         return
     if args.row is not None:
         rows = [rows[args.row]]
