@@ -1,4 +1,3 @@
-#testing this push
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -10,41 +9,33 @@ from gender_guesser.detector import Detector
 from config import (
     FILE, NUMROWS, SHEETNAME,
     fake, fake_address, ny_zips,
-    NY_ADDR_CSV, REAL_ADDRESS_RATIO,
     CSV_FILE
 )
-from generators import generate_complex_name, split_address
 
 import zipcodes
-import usps_api
 
-# load csv
-_ADDR_SAMPLE = None
+def generate_complex_name(kind: str) -> str:
+    if kind == "first":
+        return fake.first_name()
+    elif kind == "last":
+        return fake.last_name()
+    else:
+        return fake.name()
 
-# load csv rows to keep in dataframe
-def _load_address_sample():
-    global _ADDR_SAMPLE
-    if _ADDR_SAMPLE is None:
-        if not os.path.exists(NY_ADDR_CSV):
-            raise FileNotFoundError(f"NY address CSV not found: {NY_ADDR_CSV}")
-        print(f"[INFO] Loading NY address sample from {NY_ADDR_CSV} …")
-        _ADDR_SAMPLE = (
-            pd.read_csv(
-                NY_ADDR_CSV,
-                usecols=["NUMBER", "STREET", "UNIT", "CITY", "POSTCODE"],
-                dtype=str,
-                nrows=10000,
-            )
-            .dropna(subset=["NUMBER", "STREET", "CITY", "POSTCODE"])
-        )
-    return _ADDR_SAMPLE
+def split_address(address: str):
+    # Try to split on common secondary unit indicators
+    match = re.match(r"(.+?)(?:,?\s*(Apt|Suite|Unit|#)\s*\w+)?$", address)
+    if match:
+        street1 = match.group(1).strip()
+        street2 = address[len(street1):].strip().lstrip(',').strip()
+        return street1, street2
+    return address, ""
 
-# Add detector instance after imports
 _detector = Detector(case_sensitive=False)
 
 # helper function
 def _gender_code(first_name: str) -> str:
-    """Return "M" or "F" using gender_guesser; fall back to random for ambiguous/unknown."""
+    #Return "M" or "F" using gender_guesser
     g = _detector.get_gender(first_name.split()[0])
     if g in ("male", "mostly_male"):
         return "M"
@@ -58,90 +49,37 @@ def generate_rows(n: int = NUMROWS) -> pd.DataFrame:
     rows = []
 
     for _ in range(n):
-        if random() < REAL_ADDRESS_RATIO:
-            addr_df = _load_address_sample()
-            addr = addr_df.sample(1).iloc[0]
-
-            #convert csv line to API parameters
-            street1 = f"{addr['NUMBER']} {addr['STREET']}".strip()
-            street2 = addr['UNIT'] if pd.notna(addr.get('UNIT')) else ""
-            city = addr['CITY'].title()
-            zip5_raw = str(addr['POSTCODE']) if pd.notna(addr['POSTCODE']) else ""
-            m = re.match(r"(\d{5})", zip5_raw)
-            zip5 = m.group(1) if m else ""
-
-            # County via zipcodes lib (may be empty)
-            zinfo = zipcodes.matching(zip5)
-            county = zinfo[0]['county'].replace("County", "").strip() if zinfo else ""
-
-            # ZIP+4 via USPS
-            try:
-                zip9 = usps_api.lookup_zip9(street1, city, "NY")
-            except Exception as exc:
-                print(f"[WARN] USPS lookup failed for '{street1}, {city}': {exc}")
-                zip9 = zip5
-
-            if not zip9 or not zip9[0].isdigit():
-                zip9 = zip5
-
-            # real address and zip via USPS
-            first_name = generate_complex_name("first")
-            last_name = generate_complex_name("last")
-            middle_initial = fake.random_uppercase_letter()
-            gender = _gender_code(first_name)
-            
-            rows.append({
-                "Formtype": "",
-                "RowType": "real",
-                "AccountID": fake.bothify("AC##########"),
-                "HealthBenefitID": fake.bothify("HX###########"),
-                "DOB": fake.date_of_birth(minimum_age=18, maximum_age=90).strftime("%m/%d/%Y"),
-                "FirstName": first_name,
-                "MiddleInitial": middle_initial,
-                "LastName": last_name,
-                "FullName": f"{first_name} {middle_initial}. {last_name}".strip(),
-                "Gender": gender,
-                "SSN": fake.ssn(),
-                "County": county,
-                "Street1": street1,
-                "Street2": street2,
-                "Zip": zip9,
-                "City": city,
-                "State": "NY",
-                "Filename": "",
-            })
-        else:
-            rec = choice(ny_zips)
-            full_address = fake_address.street_address()
-            street1, street2_candidate = split_address(full_address)
-            street2 = street2_candidate or (fake_address.secondary_address() if random() < 0.3 else "")
-            
-            # all Faker generated data
-            first_name = generate_complex_name("first")
-            last_name = generate_complex_name("last")
-            middle_initial = fake.random_uppercase_letter()
-            gender = _gender_code(first_name)
-            
-            rows.append({
-                "Formtype": "",
-                "RowType": "fake",
-                "AccountID": fake.bothify("AC##########"),
-                "HealthBenefitID": fake.bothify("HX###########"),
-                "DOB": fake.date_of_birth(minimum_age=18, maximum_age=90).strftime("%m/%d/%Y"),
-                "FirstName": first_name,
-                "MiddleInitial": middle_initial,
-                "LastName": last_name,
-                "FullName": f"{first_name} {middle_initial}. {last_name}".strip(),
-                "Gender": gender,
-                "SSN": fake.ssn(),
-                "County": rec["county"].replace("County", "").replace("county", "").strip(),
-                "Street1": street1,
-                "Street2": street2,
-                "Zip": rec["zip_code"],
-                "City": rec["city"],
-                "State": "NY",
-                "Filename": "",
-            })
+        # Generate fake data only
+        rec = choice(ny_zips)
+        full_address = fake_address.street_address()
+        street1, street2_candidate = split_address(full_address)
+        street2 = street2_candidate or (fake_address.secondary_address() if random() < 0.3 else "")
+        
+        # Generate person data
+        first_name = generate_complex_name("first")
+        last_name = generate_complex_name("last")
+        middle_initial = fake.random_uppercase_letter()
+        gender = _gender_code(first_name)
+        
+        rows.append({
+            "Formtype": "",
+            "AccountID": fake.bothify("AC##########"),
+            "HealthBenefitID": fake.bothify("HX###########"),
+            "DOB": fake.date_of_birth(minimum_age=18, maximum_age=90).strftime("%m/%d/%Y"),
+            "FirstName": first_name,
+            "MiddleInitial": middle_initial,
+            "LastName": last_name,
+            "FullName": f"{first_name} {middle_initial}. {last_name}".strip(),
+            "Gender": gender,
+            "SSN": fake.ssn(),
+            "County": rec["county"].replace("County", "").replace("county", "").strip(),
+            "Street1": street1,
+            "Street2": street2,
+            "Zip": rec["zip_code"],
+            "City": rec["city"],
+            "State": "NY",
+            "Filename": "",
+        })
 
     return pd.DataFrame(rows)
 

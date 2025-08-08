@@ -1,21 +1,25 @@
-# Ignore environment file
-.env
+# Data files
+fakedata.csv
+fakedata.xlsx
 
-# Ignore Excel output
-testfaker.xlsx
-
-# Ignore NY data folder
-ny/
-*.csv
-
-# Python cache
+# Python cache and virtual environment
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-testfaker.csv
+# Virtual Environment
+venv/
+env/
 
-# Only ignore root output directory
-/output/
+# IDE specific files
+.vscode/
+.idea/
 
-# Explicitly track template_tools/output/ by not ignoring it
-!template_tools/output/
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

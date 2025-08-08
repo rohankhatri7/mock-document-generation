@@ -1,0 +1,74 @@
+{
+  "documents": [
+    {
+      "type": "single",
+      "num_docs": 3,
+      "quality": "clear",
+      "form_type": "passport",
+      "form_directory": "forms/passport"
+    },
+    {
+      "type": "single",
+      "num_docs": 2,
+      "quality": "unclear",
+      "form_type": "paystub",
+      "form_directory": "forms/paystub"
+    },
+    {
+      "type": "single",
+      "num_docs": 2,
+      "quality": "clear",
+      "form_type": "ssn",
+      "form_directory": "forms/ssn"
+    },
+    {
+      "type": "multi",
+      "num_docs": 2,
+      "quality": "clear",
+      "form_types": [
+        {
+          "form_type": "passport",
+          "form_directory": "forms/passport"
+        },
+        {
+          "form_type": "paystub",
+          "form_directory": "forms/paystub"
+        },
+        {
+          "form_type": "empletter",
+          "form_directory": "forms/empletter"
+        }
+      ]
+    },
+    {
+      "type": "multi",
+      "num_docs": 1,
+      "quality": "unclear",
+      "form_types": [
+        {
+          "form_type": "ssn",
+          "form_directory": "forms/ssn"
+        },
+        {
+          "form_type": "i766",
+          "form_directory": "forms/i766"
+        },
+        {
+          "form_type": "taxreturn",
+          "form_directory": "forms/taxreturn"
+        },
+        {
+          "form_type": "authrep",
+          "form_directory": "forms/authrep"
+        }
+      ]
+    },
+    {
+      "type": "single",
+      "num_docs": 1,
+      "quality": "unclear",
+      "form_type": "empletter",
+      "form_directory": "forms/empletter"
+    }
+  ]
+}
